@@ -111,6 +111,84 @@ Formato: **contexto** (com a referência ao README) → **opções e trade-offs*
 - Comando: `make test-integration` (`go test -tags integration -race -count=1 ./test/...`).
 - Primeiro teste: `TestFxApp_StartsServesAndStopsWithoutLeaks`. Sobe a aplicação completa com `fxtest`, verifica o readiness (Postgres e SQS ok), para e checa com `goleak` que nenhuma goroutine vazou (README §13: "verificação da composição Fx e de seu início e encerramento, incluindo liberação de recursos dos workers").
 
+## D-010 — Domínio em pacote único `internal/domain` (etapa 1.3)
+
+- **Opções:** pacote único × subpacotes (`money`, `wallet`, `wager`, `event`).
+- **Decisão:** pacote único, mais simples de navegar, sem risco de import cycle e com os erros compartilhados no mesmo lugar (`domain.Money`, `domain.Wallet`).
+- **Isolamento verificado:** `go list -deps ./internal/domain` não contém Fx, `net/http`, AWS nem pgx. Os imports são apenas a biblioteca padrão e `github.com/google/uuid` (README §4).
+
+## D-011 — Money: `int64` em centavos, parsing estrito, moedas BRL/USD/EUR (etapa 1.3)
+
+- **Representação:** `Money{minor int64, currency Currency}`, imutável (campos não exportados, operações retornam valores novos).
+  - `Currency` também tem campo não exportado, então o valor zero (`Currency{}`/`Money{}`) é inválido e rejeitado por todas as operações.
+- **Moedas:** lista curta BRL, USD, EUR, todas ISO 4217 com 2 casas.
+  - Opções: lista curta × ISO 4217 completa (~150 moedas) × apenas o formato `^[A-Z]{3}$`, que aceitaria "XYZ" e moedas com outra escala.
+  - Moedas como JPY (0 casas) e KWD (3 casas) não são suportadas, pela escala fixa (README §6.1).
+- **Parsing de entrada externa (`ParseMoney`):** regex `^(0|[1-9][0-9]*)\.[0-9]{2}$` seguida de conversão inteira, sem float.
+  - Rejeita vazio, sinal (`-`/`+`), `NaN`, `Infinity`, notação científica, escala diferente de 2, zeros à esquerda, espaços, separador `,`, dígitos não ASCII e valores acima do limite.
+  - **Não há normalização:** só existe uma forma textual aceita para cada valor (ex.: `"25.00"`). O hash de idempotência (etapa 2.1) usa essa forma única, e entradas como `"25"` ou `"25.0"` são rejeitadas, nunca arredondadas.
+  - O código da moeda é case-sensitive: `"brl"` é rejeitado, não normalizado.
+- **Limites:** de `-92233720368547758.08` a `92233720368547758.07`. A entrada externa só aceita valores de `0.00` até o máximo.
+- **Overflow:** checado antes de cada `Add`/`Sub`/`Neg` (e no parsing). Retorna `ErrMoneyOverflow` (`AMOUNT_OUT_OF_RANGE`).
+- **Moedas diferentes:** `Add`, `Sub` e `Compare` retornam `ErrCurrencyMismatch`.
+- **Serialização:** `MarshalJSON` produz `{"amount":"25.00","currency":"BRL"}`; negativos saem como `"-20.00"` (usados em diferenças, por exemplo na reconciliação).
+  - Não há `UnmarshalJSON`. A entrada externa passa sempre por `ParseMoney`, que é estrito e não aceita negativos, e os valores do banco são reconstruídos por `NewMoney(minor, currency)`.
+
+## D-012 — Erros de domínio: `*DomainError{Kind, Code}` (etapa 1.3)
+
+- **Opções:** tipo único com código e categoria × `errors.New` com uma tabela de tradução na aplicação.
+- **Decisão:** um `*DomainError` por erro (`var ErrInsufficientFunds = &DomainError{...}`), detalhado com `fmt.Errorf("%w: ...")`. Funciona com `errors.Is` e `errors.As`.
+- **Categorias (`Kind`):**
+  - `VALIDATION`: entrada corrigível (ex.: `INVALID_MONEY`, `INVALID_CURRENCY`, `INVALID_AMOUNT`, `INVALID_REQUEST`, `UNSUPPORTED_KIND`);
+  - `BUSINESS`: rejeição definitiva, que vira `REJECTED` (ex.: `INSUFFICIENT_FUNDS`, `CURRENCY_MISMATCH`, `AMOUNT_OUT_OF_RANGE`);
+  - `CONFLICT`: reservado para idempotência e unicidade;
+  - `INTERNAL`: estado impossível, que indica bug ou dado corrompido (`INVALID_WALLET`, `INVALID_LEDGER_ENTRY`, `INVALID_TRANSITION`, `TERMINAL_STATE`, `INVALID_EVENT`).
+- O domínio nunca usa `panic` para regra de negócio. O único `panic` possível é o `uuid.Must(uuid.NewV7())`, se o gerador aleatório do sistema operacional falhar.
+
+## D-013 — Modelagem de Wallet, LedgerEntry e WagerTransaction (etapa 1.3)
+
+- **Criação × reidratação:**
+  - criação: `OpenWallet`, `NewExternalTransaction`, `NewLedgerEntry`, que geram ID (UUIDv7) e validam;
+  - reidratação: `RehydrateWallet`, `RehydrateWagerTransaction`, `RehydrateLedgerEntry`, que **apenas validam** a consistência do estado persistido, sem movimentar saldo, transicionar estado ou emitir eventos (README §6).
+- **Wallet:** `Debit`/`Credit` validam a carteira (inclusive a não inicializada), o valor positivo, a mesma moeda, overflow e saldo ≥ 0. Em seguida geram o `LedgerEntry` correspondente, atualizam o saldo e incrementam a versão.
+  - Em caso de erro, nada muda: saldo, versão e `updatedAt` ficam intactos (testado).
+  - Débito acima do saldo retorna `INSUFFICIENT_FUNDS`. O código diferente para a reversão (`REVERSAL_INSUFFICIENT_FUNDS`) é aplicado pela regra de reversão, na etapa 2.3.
+- **Versão na abertura:** começa em 1, e o crédito de abertura **não** a incrementa (README §9: "a versão da carteira nessa abertura é 1"). Os movimentos seguintes incrementam.
+- **LedgerEntry:** valida `balanceAfter = balanceBefore ± amount`, `amount > 0`, saldos ≥ 0, mesma moeda e direção conhecida.
+- **WagerTransaction:** o estado interno é um `WagerTransactionSnapshot`. `Snapshot()` e `Rehydrate` fazem cópia profunda dos ponteiros, para que ninguém altere a entidade por fora (testado).
+  - Os metadados externos ficam agrupados em `ExternalDetails`, que é `nil` para `OPENING`, e a validação de origem impõe isso nos dois sentidos.
+  - **Política de valor:** LOSS = `0.00`; BET, WIN, REFUND, ROLLBACK e OPENING > 0.
+  - **Referência:** obrigatória em REFUND/ROLLBACK; opcional em WIN; **rejeitada** em BET/LOSS, que não têm uso para ela, em vez de ser ignorada silenciosamente.
+  - **Máquina de estados:**
+    - `PENDING` → `PROCESSED` | `REJECTED` | `FAILED` | `PENDING_REFERENCE` (esta última só para reversões);
+    - `PENDING_REFERENCE` → `PROCESSED` | `REJECTED` | `FAILED`;
+    - estados terminais retornam `ErrTerminalState` sem alterar nada;
+    - `PROCESSED` exige `balanceAfter` (o saldo observado, para o replay) e, em reversões, a referência resolvida; `REJECTED`/`FAILED` exigem `failureCode`.
+  - **`OPENING`:** construtor interno separado (`newOpeningTransaction`, não exportado); `ParseExternalKind` e `NewExternalTransaction` rejeitam `OPENING` com `UNSUPPORTED_KIND`.
+- **Tempo:** os construtores normalizam os instantes para UTC truncado em microssegundos, a precisão do `TIMESTAMPTZ`. Assim, o valor em memória é igual ao relido do banco.
+
+## D-014 — Eventos: uma struct por tipo, embutindo `EventHeader` (etapa 1.3)
+
+- **Opções:** struct por evento × envelope genérico `Envelope[T]` × `Data any`, que não seria tipado.
+- **Decisão:** `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, cada um com `EventHeader` embutido e `Data` tipado. O JSON do envelope sai plano: `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`, `occurredAt`, `version`, `data`.
+- **Construtores:** o tipo e a versão (1) são fixados pelo construtor (README §11). O construtor exige o status correspondente da transação, por exemplo `Processed` só para `PROCESSED`, e valida `correlationId` e `occurredAt`.
+- **`aggregateId` = `walletId`** em todos os eventos: a carteira é a raiz do agregado, e esse valor vira o `MessageGroupId` na publicação, o que dá ordem por carteira.
+- **Timestamps:** UTC em RFC 3339. **Dinheiro:** strings decimais. **`WalletBalanceChanged`** traz `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter` e `walletVersion`.
+- **`OpenWallet`** retorna `WalletOpening{Wallet, Transaction, LedgerEntry, Events}`. Com saldo zero, só a carteira, sem OPENING, ledger ou eventos (README §9). O payload é serializado uma vez, na criação, e será gravado na outbox como snapshot imutável (etapa 2.7).
+- **Testes do domínio:** 94,7% de cobertura, com `-race`.
+
+## D-015 — Referência em BET/LOSS e saldo observado na rejeição (etapa 1.3)
+
+- **Referência em BET/LOSS:** é recusada como entrada inválida (`INVALID_REQUEST`, categoria VALIDATION).
+  - Alternativa avaliada: aceitar e ignorar o campo.
+  - Decisão: recusar, para que nada seja descartado em silêncio e o provedor descubra o erro.
+- **Saldo observado na rejeição:** `REJECTED` passa a guardar o saldo da carteira no momento da rejeição, no mesmo campo `balanceAfter` (para uma rejeição, igual ao saldo anterior, porque não há movimento).
+  - Alternativa avaliada: rejeição sem saldo. O README só exige o saldo no replay de operações concluídas.
+  - Decisão: guardar o saldo. No teste das duas apostas de 80.00, a rejeitada registra 20.00, o que ajuda o provedor a entender a recusa, inclusive no replay.
+  - `MarkRejected(code, observedBalance, now)` exige um saldo válido e não negativo. A moeda não é comparada com a da transação, porque uma rejeição por `CURRENCY_MISMATCH` observa justamente a moeda da carteira.
+  - A reidratação de `REJECTED` sem `balanceAfter` falha. O evento `WagerTransactionRejected` traz `data.observedBalance`.
+  - `FAILED` (falha de infraestrutura) continua sem saldo, porque pode acontecer sem que a carteira tenha sido lida.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

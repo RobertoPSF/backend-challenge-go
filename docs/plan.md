@@ -1113,7 +1113,7 @@ Gerado a partir de `docs/DECISIONS.md`: tudo que foi feito, decisões, tecnologi
 | --- | --- | --- |
 | Processada (nova) | 201 | `status: PROCESSED`, `balance`, `idempotentReplay: false` |
 | Processada (replay) | 200 | `status: PROCESSED`, `balance` original, `idempotentReplay: true` |
-| Rejeição de negócio (nova ou replay) | 422 | `status: REJECTED`, `failureCode`, `idempotentReplay` |
+| Rejeição de negócio (nova ou replay) | 422 | `status: REJECTED`, `failureCode`, `balance` observado na rejeição (D-015), `idempotentReplay` |
 | Aguardando referência | 202 | `status: PENDING_REFERENCE`, `Location` da transação |
 | Entrada inválida | 400 | `error.code` |
 | Carteira inexistente (D-002) | 422 | `error.code = WALLET_NOT_FOUND` (sem `status`, o que o distingue da rejeição) |
