@@ -1,0 +1,83 @@
+x-env: &env
+  env_file:
+    - path: .env.example
+    - path: .env
+      required: false
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    <<: *env
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./deploy/postgres/init-roles.sh:/docker-entrypoint-initdb.d/01-init-roles.sh:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0
+    <<: *env
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  localstack:
+    image: localstack/localstack:4.14.0
+    <<: *env
+    environment:
+      SERVICES: sqs
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./deploy/aws/init-queues.sh:/etc/localstack/init/ready.d/init-queues.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/queues-ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  migrate:
+    image: migrate/migrate:v4.20.1
+    <<: *env
+    entrypoint: ["/bin/sh", "-c", "migrate -path /migrations -database \"$${DATABASE_MIGRATE_URL}\" up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build: .
+    <<: *env
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
