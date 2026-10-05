@@ -99,7 +99,11 @@ Formato: **contexto** (com a referência ao README) → **opções e trade-offs*
 - **Logs:** `slog` JSON com `instanceId`. Os eventos internos do Fx vão em nível DEBUG, para não poluir.
 - **Métricas:** `prometheus.Registry` próprio, não o global, em `/metrics`, com os coletores de Go e de processo.
 - **Timeouts:** `fx.StartTimeout` e `fx.StopTimeout` de 30s.
-- **Inicialização com dependência fora do ar:** falha imediatamente, sem retry. No compose, a ordem é garantida por `depends_on: service_healthy`; em produção, o orquestrador reinicia o processo. Verificado: com o Postgres parado, o Fx registra `start failed` e encerra.
+- **Inicialização só com as dependências saudáveis:** a ordem fica a cargo do orquestrador, usando os healthchecks das próprias dependências. A aplicação não tem lógica de espera.
+  - Opções avaliadas: (A) só no compose × (B) compose + espera na aplicação, consultando o health das dependências por até 60s.
+  - Decisão: (A). Sem código novo, e a aplicação não fica acoplada a um endpoint que só existe no LocalStack.
+  - Compose: `app` depende de `postgres: service_healthy` (`pg_isready`), `localstack: service_healthy` (marcador criado só depois que as filas existem), `keycloak: service_healthy` e `migrate: service_completed_successfully`.
+  - Fora de um orquestrador, se uma dependência estiver indisponível, a aplicação falha imediatamente no `OnStart` e o Fx desfaz o que já tinha iniciado (verificado com o Postgres parado).
 
 ## D-009 — Infraestrutura dos testes de integração (etapa 1.2)
 
