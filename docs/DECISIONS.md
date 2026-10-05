@@ -66,6 +66,47 @@ Formato: **contexto** (com a referência ao README) → **opções e trade-offs*
 - **Variáveis:** um único `.env.example`, lido por todos os serviços via `env_file`, com um `.env` opcional (no `.gitignore`) por cima. O `docker compose up` funciona a partir de um checkout limpo sem copiar nada.
 - **Runtime em `alpine` e não em distroless:** o healthcheck do compose precisa de `wget`. Ter um shell na imagem foi aceito pela simplicidade.
 
+## D-006 — Configuração com `caarlos0/env` (etapa 1.2)
+
+- **Contexto:** o README (§4) pede "inicialização com validação de configuração e dependências".
+- **Opções:** biblioteca padrão (sem dependência, ~80 linhas de conversão manual) × `caarlos0/env` (tags na struct, menos código, um pouco "mágico").
+- **Decisão:** `caarlos0/env/v11`.
+  - Obrigatoriedade e tipos ficam nas tags (`required,notEmpty`, `envDefault`).
+  - Regras extras ficam em `Config.Validate()`: `DB_MAX_CONNS >= 1`, filas terminando em `.fifo` e `INSTANCE_ID` não vazio (o padrão é o hostname).
+- **Consequências:** configuração inválida derruba o processo antes de qualquer conexão (`config.Load` é um construtor do Fx).
+
+## D-007 — Runner genérico para os workers (etapa 1.2)
+
+- **Contexto:** o README (§4) pede "cancelamento, prazos de execução e término observável dos workers".
+- **Opções:** Runner genérico (lógica de shutdown escrita e testada uma vez) × cada worker com o próprio ciclo de vida (lógica repetida três vezes).
+- **Decisão:** `worker.Runner`. Cada worker implementa `Loop { Name(); RunOnce(ctx) (didWork bool, err error) }`.
+  - `Start`: cria um contexto cancelável e N goroutines (`sync.WaitGroup.Go`).
+  - Entre iterações: espera `idleDelay` quando não houve trabalho ou houve erro.
+  - `Stop(ctx)`: cancela o contexto, o que significa parar de buscar trabalho novo, e espera as goroutines até o prazo do `OnStop`. Se o prazo estourar, retorna erro, e o término fica observável via log e Fx.
+- **Contrato importante:** o `ctx` recebido por `RunOnce` é cancelado no início do shutdown. Para *buscar* trabalho, o worker usa esse `ctx`. Para *concluir ou liberar* o trabalho em andamento, usa `context.WithoutCancel(ctx)` com o próprio timeout. Assim o Runner continua simples e cada worker decide explicitamente o que conclui e o que libera (README §10: "conclua o processamento em andamento dentro do prazo, ou libere sua visibilidade").
+
+## D-008 — Composição Fx e ordem do ciclo de vida (etapa 1.2)
+
+- **Módulos:** `config`, `logger`, `metrics`, `postgres`, `sqs`, `http`, um `fx.Module` por pacote, reunidos em `bootstrap.Options()` e reaproveitados pelo `main` e pelos testes.
+- **Ordem:** o Fx executa os `OnStop` na ordem inversa dos `OnStart`. Como um componente só é construído depois de suas dependências, a ordem sai do próprio grafo:
+  - start: config → logger → pool (ping) → SQS (`GetQueueUrl` das duas filas) → servidor HTTP;
+  - stop: servidor HTTP → SQS (fecha conexões ociosas) → pool.
+  - Verificado com SIGTERM real no compose (logs na ordem acima).
+- **`/health/ready` antecipado da etapa 2.9 para a 1.2:** o Fx só constrói o que alguém usa. O readiness é o consumidor natural do pool e do cliente SQS, o que evita um `fx.Invoke` artificial.
+  - O readiness faz `Ping` no banco e `GetQueueAttributes` na fila de entrada, com timeout de 2s cada.
+  - Responde 503 com `{"checks":{"postgres":"unavailable",...}}`. O detalhe do erro vai só para o log, para não expor hosts num endpoint público.
+- **Servidor HTTP:** `net.Listen` síncrono no `OnStart`, para falhar cedo se a porta estiver ocupada. Se o `Serve` falhar depois, chama `fx.Shutdowner` com exit code 1, em vez de manter um processo sem HTTP.
+- **Logs:** `slog` JSON com `instanceId`. Os eventos internos do Fx vão em nível DEBUG, para não poluir.
+- **Métricas:** `prometheus.Registry` próprio, não o global, em `/metrics`, com os coletores de Go e de processo.
+- **Timeouts:** `fx.StartTimeout` e `fx.StopTimeout` de 30s.
+- **Inicialização com dependência fora do ar:** falha imediatamente, sem retry. No compose, a ordem é garantida por `depends_on: service_healthy`; em produção, o orquestrador reinicia o processo. Verificado: com o Postgres parado, o Fx registra `start failed` e encerra.
+
+## D-009 — Infraestrutura dos testes de integração (etapa 1.2)
+
+- Pacote `test/testinfra` (build tag `integration`) sobe `postgres:16.15-alpine` e `localstack/localstack:4.14.0` via `testcontainers-go`, **reaproveitando os mesmos scripts do compose** (`init-roles.sh`, `init-queues.sh`) e aplicando as migrations com `golang-migrate` como biblioteca (role `wallet_owner`). A aplicação conecta com `wallet_app`.
+- Comando: `make test-integration` (`go test -tags integration -race -count=1 ./test/...`).
+- Primeiro teste: `TestFxApp_StartsServesAndStopsWithoutLeaks`. Sobe a aplicação completa com `fxtest`, verifica o readiness (Postgres e SQS ok), para e checa com `goleak` que nenhuma goroutine vazou (README §13: "verificação da composição Fx e de seu início e encerramento, incluindo liberação de recursos dos workers").
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -79,3 +120,9 @@ O healthcheck usa `/dev/tcp` do bash contra o endpoint de health da porta de ges
 
 ### P-004 — Issuer do Keycloak depende de como ele é acessado (pendente, etapa 1.6)
 Acessado pelo host, o `issuer` é `http://localhost:8081/realms/wagering`. De dentro da rede do compose, seria `http://keycloak:8080/...`. Tokens obtidos pelo host não validariam na aplicação. Será resolvido na etapa 1.6, com trade-offs apresentados.
+
+### P-005 — Testes do Runner com condição de corrida no próprio teste (etapa 1.2)
+Dois testes chamavam `Stop` logo depois de `Start`. A goroutine às vezes ainda não tinha entrado em `RunOnce`, via o contexto já cancelado e saía sem executá-lo, o que é o comportamento correto do Runner. Os testes passaram a esperar um sinal `started` antes do `Stop`. Rodados com `-race -count=3` sem falhas.
+
+### P-006 — Mensagem de erro de parse da config cita o campo, não a variável (etapa 1.2)
+Para `LOG_LEVEL=LOUD`, o `caarlos0/env` retorna `parse error on field "LogLevel"`. A mensagem continua clara e foi aceita sem código extra de tradução.

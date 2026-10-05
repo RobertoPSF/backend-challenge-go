@@ -937,7 +937,7 @@ Ficam nas etapas 3.1 e 3.4.
 | `outbox_publish_total` | counter | `result` |
 | `reconciliation_mismatches_total` | counter | — |
 
-### Health
+### Health (implementado antecipadamente na etapa 1.2, D-008)
 - `/health/live`: 200 se o processo responde.
 - `/health/ready`: `pool.Ping` + `GetQueueAttributes` na fila de entrada, com timeout de 2s cada; 503 com o detalhe de qual dependência falhou. Durante o shutdown, passa a devolver 503 imediatamente, para tirar a instância do balanceamento.
 

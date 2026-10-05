@@ -1,0 +1,64 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+
+	"github.com/caarlos0/env/v11"
+	"go.uber.org/fx"
+)
+
+var Module = fx.Module("config", fx.Provide(Load))
+
+type Config struct {
+	HTTPAddr   string     `env:"HTTP_ADDR" envDefault:":8080"`
+	LogLevel   slog.Level `env:"LOG_LEVEL" envDefault:"INFO"`
+	InstanceID string     `env:"INSTANCE_ID"`
+	Database   Database
+	AWS        AWS
+}
+
+type Database struct {
+	URL      string `env:"DATABASE_URL,required,notEmpty"`
+	MaxConns int32  `env:"DB_MAX_CONNS" envDefault:"10"`
+}
+
+type AWS struct {
+	Region      string `env:"AWS_REGION,required,notEmpty"`
+	EndpointURL string `env:"AWS_ENDPOINT_URL"`
+	InputQueue  string `env:"SQS_INPUT_QUEUE" envDefault:"wager-transactions.fifo"`
+	EventsQueue string `env:"SQS_EVENTS_QUEUE" envDefault:"wallet-events.fifo"`
+}
+
+func Load() (Config, error) {
+	cfg, err := env.ParseAs[Config]()
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	if cfg.InstanceID == "" {
+		cfg.InstanceID, _ = os.Hostname()
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, fmt.Errorf("invalid config: %w", err)
+	}
+	return cfg, nil
+}
+
+func (c Config) Validate() error {
+	var errs []error
+	if c.Database.MaxConns < 1 {
+		errs = append(errs, errors.New("DB_MAX_CONNS must be >= 1"))
+	}
+	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.AWS.InputQueue, "SQS_EVENTS_QUEUE": c.AWS.EventsQueue} {
+		if !strings.HasSuffix(queue, ".fifo") {
+			errs = append(errs, fmt.Errorf("%s must be a FIFO queue (.fifo): %q", name, queue))
+		}
+	}
+	if c.InstanceID == "" {
+		errs = append(errs, errors.New("INSTANCE_ID is empty and hostname is unavailable"))
+	}
+	return errors.Join(errs...)
+}

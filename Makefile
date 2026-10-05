@@ -1,4 +1,4 @@
-.PHONY: up down clean build fmt vet test test-race check queues
+.PHONY: up down clean build fmt vet test test-race check queues test-integration
 
 up:
 	docker compose up --build -d
@@ -28,3 +28,6 @@ check: fmt vet test-race
 
 queues:
 	docker compose exec localstack awslocal sqs list-queues
+
+test-integration: ## Testes de integração com containers reais (testcontainers)
+	go test -tags integration -race -count=1 ./test/...
