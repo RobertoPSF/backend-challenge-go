@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Wallet API - Backend Challenge",
-    "description": "Roteiro de testes manuais/automatizados. Rode a collection inteira em ordem (Collection Runner) com o ambiente local de pé (docker compose up --build). Veja docs/postman/ROTEIRO.md.",
+    "description": "Roteiro de testes: rode a collection inteira em ordem (Collection Runner) com o ambiente local de pé (docker compose up --build). Veja docs/postman/ROTEIRO.md.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -103,6 +103,90 @@
     },
     {
       "key": "denyId",
+      "value": ""
+    },
+    {
+      "key": "sqsUrl",
+      "value": "http://localhost:4566"
+    },
+    {
+      "key": "raceWalletId",
+      "value": ""
+    },
+    {
+      "key": "racePlayerId",
+      "value": ""
+    },
+    {
+      "key": "dupWalletId",
+      "value": ""
+    },
+    {
+      "key": "dupPlayerId",
+      "value": ""
+    },
+    {
+      "key": "pendWalletId",
+      "value": ""
+    },
+    {
+      "key": "pendPlayerId",
+      "value": ""
+    },
+    {
+      "key": "pendRefundId",
+      "value": ""
+    },
+    {
+      "key": "pendBetId",
+      "value": ""
+    },
+    {
+      "key": "pendRefundTx",
+      "value": ""
+    },
+    {
+      "key": "pendWinId",
+      "value": ""
+    },
+    {
+      "key": "pendMissingId",
+      "value": ""
+    },
+    {
+      "key": "sqsWalletId",
+      "value": ""
+    },
+    {
+      "key": "sqsPlayerId",
+      "value": ""
+    },
+    {
+      "key": "sqsMsgId",
+      "value": ""
+    },
+    {
+      "key": "sqsBetId",
+      "value": ""
+    },
+    {
+      "key": "sqsBetTx",
+      "value": ""
+    },
+    {
+      "key": "sqsBadAmountMsg",
+      "value": ""
+    },
+    {
+      "key": "sqsBadAmountId",
+      "value": ""
+    },
+    {
+      "key": "sqsBadProviderMsg",
+      "value": ""
+    },
+    {
+      "key": "sqsBadProviderId",
       "value": ""
     }
   ],
@@ -2800,6 +2884,1230 @@
               }
             ],
             "url": "{{baseUrl}}/wallets/{{wagerWalletId}}/reconciliation",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Concorrência (requisições paralelas)",
+      "item": [
+        {
+          "name": "Abrir carteira com 100.00 para a disputa",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"racePlayerId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"raceWalletId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{racePlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Duas BETs distintas de 80.00 ao mesmo tempo -> uma 201 e uma 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.collectionVariables.get(\"baseUrl\");",
+                  "const providerToken = pm.collectionVariables.get(\"providerToken\");",
+                  "const adminToken = pm.collectionVariables.get(\"adminToken\");",
+                  "const call = (method, path, token, body, headers) => new Promise(resolve => pm.sendRequest({",
+                  "  url: base + path, method,",
+                  "  header: Object.assign({ \"Content-Type\": \"application/json\", \"Authorization\": \"Bearer \" + token }, headers || {}),",
+                  "  body: body ? { mode: \"raw\", raw: JSON.stringify(body) } : undefined",
+                  "}, (err, res) => resolve(err ? { status: 0, body: {} } : { status: res.code, body: res.json() })));",
+                  "const bet = (wallet, player, ext, amount) => call(\"POST\", \"/wagering/transactions\", providerToken, {",
+                  "  providerId: \"provider-a\", externalTransactionId: ext, playerId: player, walletId: wallet,",
+                  "  roundId: \"round-987\", gameId: \"fortune-chimp\", kind: \"BET\", money: { amount, currency: \"BRL\" }",
+                  "}, { \"Idempotency-Key\": \"provider-a:\" + ext });",
+                  "",
+                  "const wallet = pm.collectionVariables.get(\"raceWalletId\");",
+                  "const player = pm.collectionVariables.get(\"racePlayerId\");",
+                  "const ids = [\"race-a-\" + Date.now(), \"race-b-\" + Date.now()];",
+                  "Promise.all(ids.map(id => bet(wallet, player, id, \"80.00\"))).then(results => {",
+                  "  const statuses = results.map(r => r.status).sort();",
+                  "  console.log(\"80+80 statuses\", statuses, results.map(r => r.body));",
+                  "  pm.test(\"one processed (201) and one rejected (422)\", () => pm.expect(statuses).to.eql([201, 422]));",
+                  "  const rejected = results.find(r => r.status === 422);",
+                  "  pm.test(\"rejection is INSUFFICIENT_FUNDS with observed balance 20.00\", () => {",
+                  "    pm.expect(rejected.body.failureCode).to.eql(\"INSUFFICIENT_FUNDS\");",
+                  "    pm.expect(rejected.body.balance.amount).to.eql(\"20.00\");",
+                  "  });",
+                  "  return call(\"GET\", \"/wallets/\" + wallet + \"/ledger\", adminToken);",
+                  "}).then(ledger => {",
+                  "  const debits = ledger.body.items.filter(i => i.direction === \"DEBIT\");",
+                  "  pm.test(\"a single debit in the ledger\", () => pm.expect(debits).to.have.length(1));",
+                  "  pm.test(\"final balance 20.00\", () => pm.expect(ledger.body.items[ledger.body.items.length - 1].balanceAfter.amount).to.eql(\"20.00\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{raceWalletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Abrir carteira com 100.00 para os 50 envios",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"dupPlayerId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"dupWalletId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{dupPlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A mesma BET 50x ao mesmo tempo -> 1x 201 e 49x 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.collectionVariables.get(\"baseUrl\");",
+                  "const providerToken = pm.collectionVariables.get(\"providerToken\");",
+                  "const adminToken = pm.collectionVariables.get(\"adminToken\");",
+                  "const call = (method, path, token, body, headers) => new Promise(resolve => pm.sendRequest({",
+                  "  url: base + path, method,",
+                  "  header: Object.assign({ \"Content-Type\": \"application/json\", \"Authorization\": \"Bearer \" + token }, headers || {}),",
+                  "  body: body ? { mode: \"raw\", raw: JSON.stringify(body) } : undefined",
+                  "}, (err, res) => resolve(err ? { status: 0, body: {} } : { status: res.code, body: res.json() })));",
+                  "const bet = (wallet, player, ext, amount) => call(\"POST\", \"/wagering/transactions\", providerToken, {",
+                  "  providerId: \"provider-a\", externalTransactionId: ext, playerId: player, walletId: wallet,",
+                  "  roundId: \"round-987\", gameId: \"fortune-chimp\", kind: \"BET\", money: { amount, currency: \"BRL\" }",
+                  "}, { \"Idempotency-Key\": \"provider-a:\" + ext });",
+                  "",
+                  "const wallet = pm.collectionVariables.get(\"dupWalletId\");",
+                  "const player = pm.collectionVariables.get(\"dupPlayerId\");",
+                  "const ext = \"dup-\" + Date.now();",
+                  "Promise.all(Array.from({ length: 50 }, () => bet(wallet, player, ext, \"10.00\"))).then(results => {",
+                  "  const count = code => results.filter(r => r.status === code).length;",
+                  "  console.log(\"50x statuses\", { created: count(201), replay: count(200), other: results.length - count(201) - count(200) });",
+                  "  pm.test(\"exactly one 201\", () => pm.expect(count(201)).to.eql(1));",
+                  "  pm.test(\"49 idempotent replays (200)\", () => pm.expect(count(200)).to.eql(49));",
+                  "  pm.test(\"all answers point to the same transaction\", () => pm.expect(new Set(results.map(r => r.body.transactionId)).size).to.eql(1));",
+                  "  pm.test(\"replays flagged idempotentReplay\", () => pm.expect(results.filter(r => r.body.idempotentReplay).length).to.eql(49));",
+                  "  return call(\"GET\", \"/wallets/\" + wallet, adminToken);",
+                  "}).then(w => {",
+                  "  pm.test(\"debited once: balance 90.00, version 2\", () => {",
+                  "    pm.expect(w.body.balance.amount).to.eql(\"90.00\");",
+                  "    pm.expect(w.body.version).to.eql(2);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{dupWalletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Reconciliação depois da disputa -> consistente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"consistent, 20.00, 2 entries\", () => {",
+                  "  pm.expect(b.consistent).to.eql(true);",
+                  "  pm.expect(b.storedBalance.amount).to.eql(\"20.00\");",
+                  "  pm.expect(b.checkedEntries).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{raceWalletId}}/reconciliation",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Referência pendente resolvida pelo worker",
+      "item": [
+        {
+          "name": "Abrir carteira com 100.00",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"pendPlayerId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"pendWalletId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{pendPlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "REFUND de uma BET que ainda não chegou -> 202 PENDING_REFERENCE",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"pendRefundId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"pendBetId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"PENDING_REFERENCE without balance\", () => {",
+                  "  pm.expect(pm.response.json().status).to.eql(\"PENDING_REFERENCE\");",
+                  "  pm.expect(pm.response.json().balance).to.be.undefined;",
+                  "});",
+                  "pm.collectionVariables.set(\"pendRefundTx\", pm.response.json().transactionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "provider-a:{{pendRefundId}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wagering/transactions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{pendRefundId}}\",\n  \"playerId\": \"{{pendPlayerId}}\",\n  \"walletId\": \"{{pendWalletId}}\",\n  \"roundId\": \"round-987\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"REFUND\",\n  \"money\": {\n    \"amount\": \"30.00\",\n    \"currency\": \"BRL\"\n  },\n  \"referenceExternalTransactionId\": \"{{pendBetId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Acompanhar a pendência -> tentativas agendadas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"still waiting\", () => pm.expect(b.status).to.eql(\"PENDING_REFERENCE\"));",
+                  "pm.test(\"next attempt and expiration scheduled\", () => { pm.expect(b.nextAttemptAt).to.be.a(\"string\"); pm.expect(b.expiresAt).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wagering/transactions/{{pendRefundTx}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "A BET referenciada chega -> 201, saldo 70.00",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"balance 70.00\", () => pm.expect(pm.response.json().balance.amount).to.eql(\"70.00\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "provider-a:{{pendBetId}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wagering/transactions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{pendBetId}}\",\n  \"playerId\": \"{{pendPlayerId}}\",\n  \"walletId\": \"{{pendWalletId}}\",\n  \"roundId\": \"round-987\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"30.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "O worker aplica o REFUND sozinho -> PROCESSED, saldo 100.00",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 2500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"refund processed by the background worker\", () => pm.expect(b.status).to.eql(\"PROCESSED\"));",
+                  "pm.test(\"balance back to 100.00\", () => pm.expect(b.balance.amount).to.eql(\"100.00\"));",
+                  "pm.test(\"reference resolved\", () => pm.expect(b.referenceTransactionId).to.be.a(\"string\"));",
+                  "pm.test(\"no more scheduling once terminal\", () => pm.expect(b.nextAttemptAt).to.be.undefined);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wagering/transactions/{{pendRefundTx}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "WIN referenciando uma BET inexistente -> 202 e continua aguardando",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"pendWinId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"pendMissingId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 PENDING_REFERENCE\", () => {",
+                  "  pm.response.to.have.status(202);",
+                  "  pm.expect(pm.response.json().status).to.eql(\"PENDING_REFERENCE\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "provider-a:{{pendWinId}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wagering/transactions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{pendWinId}}\",\n  \"playerId\": \"{{pendPlayerId}}\",\n  \"walletId\": \"{{pendWalletId}}\",\n  \"roundId\": \"round-987\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"WIN\",\n  \"money\": {\n    \"amount\": \"10.00\",\n    \"currency\": \"BRL\"\n  },\n  \"referenceExternalTransactionId\": \"{{pendMissingId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Ledger: abertura, BET e REFUND (a WIN pendente não movimenta)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items;",
+                  "pm.test(\"CREDIT, DEBIT, CREDIT\", () => pm.expect(items.map(i => i.direction)).to.eql([\"CREDIT\", \"DEBIT\", \"CREDIT\"]));",
+                  "pm.test(\"balance 100.00\", () => pm.expect(items[items.length - 1].balanceAfter.amount).to.eql(\"100.00\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{pendWalletId}}/ledger",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Entrada pela fila SQS (inbox, duplicata, DLQ)",
+      "item": [
+        {
+          "name": "Abrir carteira com 100.00 para o SQS",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"sqsPlayerId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"sqsWalletId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{sqsPlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Enviar BET 25.00 pela fila wager-transactions.fifo",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"sqsMsgId\", \"msg-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"sqsBetId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "const envelope = {",
+                  "  messageId: pm.collectionVariables.get(\"sqsMsgId\"), type: \"WagerTransactionRequested\", occurredAt: new Date().toISOString(),",
+                  "  data: {",
+                  "    providerId: \"provider-a\", externalTransactionId: pm.collectionVariables.get(\"sqsBetId\"),",
+                  "    idempotencyKey: \"provider-a:\" + pm.collectionVariables.get(\"sqsBetId\"),",
+                  "    playerId: pm.collectionVariables.get(\"sqsPlayerId\"), walletId: pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "    roundId: \"round-987\", gameId: \"fortune-chimp\", kind: \"BET\", money: { amount: \"25.00\", currency: \"BRL\" }",
+                  "  }",
+                  "};",
+                  "pm.variables.set(\"sqsRequest\", JSON.stringify({",
+                  "  QueueUrl: pm.collectionVariables.get(\"sqsUrl\") + \"/000000000000/wager-transactions.fifo\",",
+                  "  MessageBody: JSON.stringify(envelope),",
+                  "  MessageGroupId: pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "  MessageDeduplicationId: pm.variables.replaceIn(\"{{$guid}}\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"message accepted by SQS\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().MessageId).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.0"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AmazonSQS.SendMessage"
+              }
+            ],
+            "url": "{{sqsUrl}}/",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{{sqsRequest}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Consultar a BET pelo ID externo depois do consumo -> PROCESSED, 75.00",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"processed from the queue\", () => pm.expect(b.status).to.eql(\"PROCESSED\"));",
+                  "pm.test(\"balance 75.00\", () => pm.expect(b.balance.amount).to.eql(\"75.00\"));",
+                  "pm.collectionVariables.set(\"sqsBetTx\", b.transactionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/providers/provider-a/wagering/transactions/{{sqsBetId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Reentregar a MESMA mensagem (mesmo messageId, outro dedup id)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const envelope = {",
+                  "  messageId: pm.collectionVariables.get(\"sqsMsgId\"), type: \"WagerTransactionRequested\", occurredAt: new Date().toISOString(),",
+                  "  data: {",
+                  "    providerId: \"provider-a\", externalTransactionId: pm.collectionVariables.get(\"sqsBetId\"),",
+                  "    idempotencyKey: \"provider-a:\" + pm.collectionVariables.get(\"sqsBetId\"),",
+                  "    playerId: pm.collectionVariables.get(\"sqsPlayerId\"), walletId: pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "    roundId: \"round-987\", gameId: \"fortune-chimp\", kind: \"BET\", money: { amount: \"25.00\", currency: \"BRL\" }",
+                  "  }",
+                  "};",
+                  "pm.variables.set(\"sqsRequest\", JSON.stringify({",
+                  "  QueueUrl: pm.collectionVariables.get(\"sqsUrl\") + \"/000000000000/wager-transactions.fifo\",",
+                  "  MessageBody: JSON.stringify(envelope),",
+                  "  MessageGroupId: pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "  MessageDeduplicationId: pm.variables.replaceIn(\"{{$guid}}\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"message accepted by SQS\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().MessageId).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.0"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AmazonSQS.SendMessage"
+              }
+            ],
+            "url": "{{sqsUrl}}/",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{{sqsRequest}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Saldo continua 75.00 -> a inbox descartou a duplicata",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"debited only once\", () => {",
+                  "  pm.expect(pm.response.json().balance.amount).to.eql(\"75.00\");",
+                  "  pm.expect(pm.response.json().version).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{sqsWalletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Mesma operação pelo HTTP -> 200 replay do resultado do SQS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 replay\", () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().idempotentReplay).to.eql(true);",
+                  "});",
+                  "pm.test(\"same transaction and original balance\", () => {",
+                  "  pm.expect(pm.response.json().transactionId).to.eql(pm.collectionVariables.get(\"sqsBetTx\"));",
+                  "  pm.expect(pm.response.json().balance.amount).to.eql(\"75.00\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "provider-a:{{sqsBetId}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wagering/transactions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{sqsBetId}}\",\n  \"playerId\": \"{{sqsPlayerId}}\",\n  \"walletId\": \"{{sqsWalletId}}\",\n  \"roundId\": \"round-987\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"25.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Enviar mensagem com valor inválido (1e3)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"sqsBadAmountMsg\", \"msg-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"sqsBadAmountId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "const envelope = {",
+                  "  messageId: pm.collectionVariables.get(\"sqsBadAmountMsg\"), type: \"WagerTransactionRequested\", occurredAt: new Date().toISOString(),",
+                  "  data: {",
+                  "    providerId: \"provider-a\", externalTransactionId: pm.collectionVariables.get(\"sqsBadAmountId\"),",
+                  "    idempotencyKey: \"provider-a:\" + pm.collectionVariables.get(\"sqsBadAmountId\"),",
+                  "    playerId: pm.collectionVariables.get(\"sqsPlayerId\"), walletId: pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "    roundId: \"round-987\", gameId: \"fortune-chimp\", kind: \"BET\", money: { amount: \"1e3\", currency: \"BRL\" }",
+                  "  }",
+                  "};",
+                  "pm.variables.set(\"sqsRequest\", JSON.stringify({",
+                  "  QueueUrl: pm.collectionVariables.get(\"sqsUrl\") + \"/000000000000/wager-transactions.fifo\",",
+                  "  MessageBody: JSON.stringify(envelope),",
+                  "  MessageGroupId: \"postman-invalid\",",
+                  "  MessageDeduplicationId: pm.variables.replaceIn(\"{{$guid}}\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"message accepted by SQS\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().MessageId).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.0"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AmazonSQS.SendMessage"
+              }
+            ],
+            "url": "{{sqsUrl}}/",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{{sqsRequest}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Enviar mensagem de um provedor desconhecido",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"sqsBadProviderMsg\", \"msg-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"sqsBadProviderId\", \"tx-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "const envelope = {",
+                  "  messageId: pm.collectionVariables.get(\"sqsBadProviderMsg\"), type: \"WagerTransactionRequested\", occurredAt: new Date().toISOString(),",
+                  "  data: {",
+                  "    providerId: \"provider-x\", externalTransactionId: pm.collectionVariables.get(\"sqsBadProviderId\"),",
+                  "    idempotencyKey: \"provider-x:\" + pm.collectionVariables.get(\"sqsBadProviderId\"),",
+                  "    playerId: pm.collectionVariables.get(\"sqsPlayerId\"), walletId: pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "    roundId: \"round-987\", gameId: \"fortune-chimp\", kind: \"BET\", money: { amount: \"1.00\", currency: \"BRL\" }",
+                  "  }",
+                  "};",
+                  "pm.variables.set(\"sqsRequest\", JSON.stringify({",
+                  "  QueueUrl: pm.collectionVariables.get(\"sqsUrl\") + \"/000000000000/wager-transactions.fifo\",",
+                  "  MessageBody: JSON.stringify(envelope),",
+                  "  MessageGroupId: \"postman-invalid\",",
+                  "  MessageDeduplicationId: pm.variables.replaceIn(\"{{$guid}}\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"message accepted by SQS\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().MessageId).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.0"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AmazonSQS.SendMessage"
+              }
+            ],
+            "url": "{{sqsUrl}}/",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{{sqsRequest}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Ler a DLQ -> as duas mensagens com o motivo (failureReason)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ReceiveMessage on the DLQ\", () => pm.response.to.have.status(200));",
+                  "const sqsUrl = pm.collectionVariables.get(\"sqsUrl\");",
+                  "const dlq = sqsUrl + \"/000000000000/wager-transactions-dlq.fifo\";",
+                  "const wanted = {};",
+                  "wanted[pm.collectionVariables.get(\"sqsBadAmountMsg\")] = \"INVALID_MONEY\";",
+                  "wanted[pm.collectionVariables.get(\"sqsBadProviderMsg\")] = \"UNKNOWN_PROVIDER\";",
+                  "const found = {};",
+                  "const sqs = (target, body) => new Promise(resolve => pm.sendRequest({",
+                  "  url: sqsUrl + \"/\", method: \"POST\",",
+                  "  header: { \"Content-Type\": \"application/x-amz-json-1.0\", \"X-Amz-Target\": \"AmazonSQS.\" + target },",
+                  "  body: { mode: \"raw\", raw: JSON.stringify(body) }",
+                  "}, (err, res) => resolve(err ? {} : res.json())));",
+                  "const handle = messages => Promise.all((messages || []).map(m => {",
+                  "  let id = null;",
+                  "  try { id = JSON.parse(m.Body).messageId; } catch (e) {}",
+                  "  if (id in wanted) found[id] = m.MessageAttributes && m.MessageAttributes.failureReason && m.MessageAttributes.failureReason.StringValue;",
+                  "  return sqs(\"DeleteMessage\", { QueueUrl: dlq, ReceiptHandle: m.ReceiptHandle });",
+                  "}));",
+                  "const drain = (round) => sqs(\"ReceiveMessage\", { QueueUrl: dlq, MaxNumberOfMessages: 10, MessageAttributeNames: [\"All\"], WaitTimeSeconds: 1 })",
+                  "  .then(out => (out.Messages && out.Messages.length && round < 20) ? handle(out.Messages).then(() => drain(round + 1)) : null);",
+                  "handle(pm.response.json().Messages).then(() => drain(0)).then(() => {",
+                  "  console.log(\"DLQ reasons found\", found);",
+                  "  Object.keys(wanted).forEach(id => pm.test(\"dead letter \" + wanted[id] + \" with failureReason\", () => pm.expect(found[id]).to.include(wanted[id])));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.0"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AmazonSQS.ReceiveMessage"
+              }
+            ],
+            "url": "{{sqsUrl}}/",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"QueueUrl\": \"{{sqsUrl}}/000000000000/wager-transactions-dlq.fifo\",\n  \"MaxNumberOfMessages\": 10,\n  \"MessageAttributeNames\": [\"All\"],\n  \"WaitTimeSeconds\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Mensagens inválidas não criaram transação nem mexeram no saldo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404: nothing persisted\", () => pm.response.to.have.status(404));",
+                  "pm.sendRequest({ url: pm.collectionVariables.get(\"baseUrl\") + \"/wallets/\" + pm.collectionVariables.get(\"sqsWalletId\"),",
+                  "  header: { Authorization: \"Bearer \" + pm.collectionVariables.get(\"adminToken\") } }, (err, res) => {",
+                  "  pm.test(\"balance still 75.00\", () => pm.expect(res.json().balance.amount).to.eql(\"75.00\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/providers/provider-a/wagering/transactions/{{sqsBadAmountId}}",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 - Eventos publicados pela outbox",
+      "item": [
+        {
+          "name": "Nada pendente na outbox (todos os eventos publicados)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 2000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const line = pm.response.text().split(\"\\n\").find(l => l.startsWith(\"outbox_pending_events \"));",
+                  "console.log(line);",
+                  "pm.test(\"outbox_pending_events is 0\", () => pm.expect(Number(line.split(\" \")[1])).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/metrics",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ler wallet-events.fifo e conferir os eventos da carteira do SQS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ReceiveMessage on wallet-events.fifo\", () => pm.response.to.have.status(200));",
+                  "const sqsUrl = pm.collectionVariables.get(\"sqsUrl\");",
+                  "const queue = sqsUrl + \"/000000000000/wallet-events.fifo\";",
+                  "const wallet = pm.collectionVariables.get(\"sqsWalletId\");",
+                  "const mine = [];",
+                  "const sqs = (target, body) => new Promise(resolve => pm.sendRequest({",
+                  "  url: sqsUrl + \"/\", method: \"POST\",",
+                  "  header: { \"Content-Type\": \"application/x-amz-json-1.0\", \"X-Amz-Target\": \"AmazonSQS.\" + target },",
+                  "  body: { mode: \"raw\", raw: JSON.stringify(body) }",
+                  "}, (err, res) => resolve(err ? {} : res.json())));",
+                  "const handle = messages => Promise.all((messages || []).map(m => {",
+                  "  const event = JSON.parse(m.Body);",
+                  "  if (event.aggregateId === wallet) mine.push({ event, group: m.Attributes && m.Attributes.MessageGroupId, type: m.MessageAttributes && m.MessageAttributes.eventType.StringValue });",
+                  "  return sqs(\"DeleteMessage\", { QueueUrl: queue, ReceiptHandle: m.ReceiptHandle });",
+                  "}));",
+                  "const drain = round => sqs(\"ReceiveMessage\", { QueueUrl: queue, MaxNumberOfMessages: 10, MessageAttributeNames: [\"All\"],",
+                  "    MessageSystemAttributeNames: [\"MessageGroupId\"], WaitTimeSeconds: 1 })",
+                  "  .then(out => (out.Messages && out.Messages.length && round < 200) ? handle(out.Messages).then(() => drain(round + 1)) : null);",
+                  "handle(pm.response.json().Messages).then(() => drain(0)).then(() => {",
+                  "  console.log(\"events of the SQS wallet\", mine.map(m => m.event.eventType + \" v\" + (m.event.data.walletVersion || \"-\")));",
+                  "  pm.test(\"4 events: opening (processed + balance) and the BET (processed + balance)\", () => pm.expect(mine).to.have.length(4));",
+                  "  pm.test(\"routed by wallet (MessageGroupId = walletId)\", () => mine.forEach(m => pm.expect(m.group).to.eql(wallet)));",
+                  "  pm.test(\"eventType attribute matches the body\", () => mine.forEach(m => pm.expect(m.type).to.eql(m.event.eventType)));",
+                  "  pm.test(\"envelope fields present\", () => mine.forEach(m => [\"eventId\", \"eventType\", \"aggregateId\", \"correlationId\", \"occurredAt\", \"version\", \"data\"]",
+                  "    .forEach(f => pm.expect(m.event).to.have.property(f))));",
+                  "  pm.test(\"unique eventIds (duplicates and replays published nothing)\", () => pm.expect(new Set(mine.map(m => m.event.eventId)).size).to.eql(4));",
+                  "  const versions = mine.filter(m => m.event.eventType === \"WalletBalanceChanged\").map(m => m.event.data.walletVersion);",
+                  "  pm.test(\"balance events in wallet order (v1, v2)\", () => pm.expect(versions).to.eql([1, 2]));",
+                  "  const bet = mine.find(m => m.event.eventType === \"WagerTransactionProcessed\" && m.event.data.kind === \"BET\");",
+                  "  pm.test(\"BET event correlated with the SQS messageId\", () => pm.expect(bet.event.correlationId).to.eql(pm.collectionVariables.get(\"sqsMsgId\")));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.0"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AmazonSQS.ReceiveMessage"
+              }
+            ],
+            "url": "{{sqsUrl}}/",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"QueueUrl\": \"{{sqsUrl}}/000000000000/wallet-events.fifo\",\n  \"MaxNumberOfMessages\": 10,\n  \"MessageAttributeNames\": [\"All\"],\n  \"MessageSystemAttributeNames\": [\"MessageGroupId\"],\n  \"WaitTimeSeconds\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 - Métricas de observabilidade",
+      "item": [
+        {
+          "name": "Métricas exigidas pelo README",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const text = pm.response.text();",
+                  "const series = [",
+                  "  'wager_transactions_total{channel=\"http\",kind=\"BET\",status=\"PROCESSED\"}',",
+                  "  'wager_transactions_total{channel=\"http\",kind=\"BET\",status=\"REJECTED\"}',",
+                  "  'wager_transactions_total{channel=\"sqs\",kind=\"BET\",status=\"PROCESSED\"}',",
+                  "  'wager_transactions_total{channel=\"worker\",kind=\"REFUND\",status=\"PROCESSED\"}',",
+                  "  'wager_idempotent_replays_total{channel=\"http\"}',",
+                  "  'wager_processing_duration_seconds_count{channel=\"http\"}',",
+                  "  'sqs_messages_total{result=\"processed\"}',",
+                  "  'sqs_messages_total{result=\"duplicate\"}',",
+                  "  'sqs_messages_total{result=\"dead_letter\"}',",
+                  "  'sqs_dead_letters_total{reason=\"INVALID_MONEY\"}',",
+                  "  'sqs_dead_letters_total{reason=\"UNKNOWN_PROVIDER\"}',",
+                  "  'pending_reference_attempts_total{outcome=\"resolved\"}',",
+                  "  'outbox_publish_total{result=\"published\"}',",
+                  "  'outbox_pending_events ',",
+                  "  'outbox_oldest_pending_age_seconds ',",
+                  "  'pending_references_waiting ',",
+                  "  'reconciliation_mismatches_total ',",
+                  "  'http_request_duration_seconds_count{method=\"POST\",route=\"/wagering/transactions\",status=\"201\"}'",
+                  "];",
+                  "series.forEach(s => pm.test(\"exposes \" + s.trim(), () => pm.expect(text).to.include(s)));",
+                  "console.log(text.split(\"\\n\").filter(l => /^(wager_|sqs_|outbox_|pending_|reconciliation_|wallet_concurrency)/.test(l)).join(\"\\n\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/metrics",
             "description": ""
           }
         }

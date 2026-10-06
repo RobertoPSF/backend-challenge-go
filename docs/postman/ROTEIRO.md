@@ -1,8 +1,10 @@
 # Roteiro de testes via Postman
 
-Collection: [`wallet-api.postman_collection.json`](wallet-api.postman_collection.json), com 72 requisições e 199 asserções automáticas.
+Collection: [`wallet-api.postman_collection.json`](wallet-api.postman_collection.json).
 
-Cobre tokens, health, carteiras, ledger, validação de entrada, segurança e as **operações de aposta** (BET, WIN, LOSS, REFUND, ROLLBACK, idempotência, pendência e isolamento entre provedores). SQS, publicação da outbox, worker de pendências e reconciliação entram nas próximas etapas, e a collection será ampliada.
+São **97 requisições em 11 pastas** e **275 asserções automáticas**, cobrindo o sistema inteiro: tokens, carteiras, validação, segurança, operações de aposta, **concorrência**, **worker de referências pendentes**, **entrada pela fila SQS** (inbox, duplicata e DLQ), **eventos publicados pela outbox** e **métricas**.
+
+As pastas 06 a 10 também disparam requisições a partir dos scripts (paralelas e de leitura de filas), então o Runner mostra mais requisições executadas do que as 97 listadas.
 
 ## 1. Preparar o ambiente
 
@@ -15,27 +17,43 @@ O retorno esperado é `{"checks":{"postgres":"ok","sqs":"ok"},"status":"ok"}`.
 
 ## 2. Importar e rodar
 
-1. Postman → **Import** → selecione `docs/postman/wallet-api.postman_collection.json`.
-2. As variáveis já vêm na collection: `baseUrl = http://localhost:8080` e `keycloakUrl = http://localhost:8081`. Não é preciso criar um *environment*.
-3. Clique com o botão direito na collection → **Run collection** → **Run**. As pastas dependem umas das outras e precisam rodar **em ordem**: a pasta 00 obtém os tokens e a 02 cria a carteira usada depois.
-4. Para explorar uma requisição isolada, rode antes a pasta **00 - Tokens**. Os tokens valem 5 minutos.
+1. Postman → **Import** → selecione `wallet-api.postman_collection.json`. No Windows, use a cópia em `C:\Users\<você>\Downloads`, porque o Postman não lê arquivos direto do WSL.
+2. As variáveis já vêm na collection: `baseUrl` (API, `localhost:8080`), `keycloakUrl` (`localhost:8081`) e `sqsUrl` (LocalStack, `localhost:4566`).
+3. Na collection, clique em **⋯** e depois em **Run collection** → **Run**, **em ordem** e com o campo **Data** vazio. A pasta 00 obtém os tokens, e as seguintes reutilizam as carteiras que criam.
+4. A execução completa leva cerca de 30s, porque algumas requisições esperam de propósito pelo worker e pelo consumidor (2 a 3s cada).
 
-Pela linha de comando, sem o Postman instalado:
+Para explorar uma pasta isolada, rode antes a **00 - Tokens**, cujos tokens valem 5 minutos.
+
+Pela linha de comando:
 
 ```sh
 docker run --rm --network host -v "$PWD/docs/postman:/etc/newman" postman/newman:6-alpine run wallet-api.postman_collection.json
 ```
 
+O roteiro é **repetível**: pode ser rodado várias vezes sobre o mesmo ambiente, porque gera IDs novos a cada execução e limpa as filas que lê.
+
 ## 3. O que cada pasta demonstra
+
+### Base
 
 | Pasta | O que observar |
 | --- | --- |
-| **00 - Tokens** | Tokens reais emitidos pelo Keycloak via `client_credentials`. O **Console** do Postman mostra as claims de cada token: `iss`, `aud`, `provider_id`, roles e validade. O `provider-a-short-lived` vale só 2s. Secret errado → 401 do próprio Keycloak. |
-| **01 - Health** | `/health/live` (o processo está de pé), `/health/ready` (Postgres e SQS acessíveis) e `/metrics` (Prometheus). Os três são públicos. |
-| **02 - Carteiras** | Abertura com 1000.00 BRL: 201, `version: 1`, valor como **string decimal**, `Location` e `X-Correlation-Id` devolvido. O ledger mostra o crédito de abertura 0.00 → 1000.00. O mesmo jogador e moeda dá **409**; outra moeda é aceita. Saldo zero não cria lançamento. |
-| **03 - Validação** | 20 entradas inválidas, todas **400** com o código específico (`INVALID_MONEY`, `INVALID_CURRENCY`, `INVALID_REQUEST`): `"10"`, `"10.5"`, `"-1.00"`, `"1e3"`, `NaN`, valor acima do limite, número em vez de string, `"brl"`, `"JPY"`, campo desconhecido, JSON quebrado, `limit` e `cursor` inválidos, carteira inexistente (404). |
-| **04 - Segurança** | 401 para requisição sem token, esquema `Basic`, token adulterado, outra audiência e **token expirado**. 403 quando o provedor tenta operações de carteira ou quando o client não tem roles. A última requisição confirma que **nenhuma tentativa negada alterou o saldo**. |
-| **05 - Operações de aposta** | Carteira com 100.00: **BET 80.00** → 201, saldo 20.00; **reenvio** → 200 `idempotentReplay: true` com o mesmo saldo; **outra BET 80.00** → 422 `INSUFFICIENT_FUNDS` com saldo observado 20.00; mesma chave com outro valor → 409; **LOSS** → saldo inalterado; **WIN** referenciando a BET → 70.00; **REFUND** da BET → 150.00; **ROLLBACK** da mesma BET → 422 `ALREADY_REVERSED`; REFUND antes da BET existir → **202 `PENDING_REFERENCE`**, acompanhável pelo `Location`; consultas pelo ID interno e pelo ID externo; provider-b não enxerga (404) nem consulta a rota do provider-a (403); serviço interno não envia apostas (403). Termina conferindo o ledger (4 lançamentos), o saldo final 150.00 (versão 4) e a **reconciliação** (`consistent: true`, 4 lançamentos conferidos). |
+| **00 - Tokens** | Tokens reais emitidos pelo Keycloak via `client_credentials`: `provider-a`, `provider-b`, `wallet-service`, client sem roles, client com outra audiência e um token que expira em 2s. O **Console** mostra as claims de cada um. |
+| **01 - Health** | `/health/live`, `/health/ready` (Postgres + SQS) e `/metrics`, todos públicos. |
+| **02 - Carteiras** | Abertura com 1000.00 (201, `version: 1`, valor como string decimal), ledger com o crédito de abertura, 409 para o mesmo jogador e moeda, saldo zero sem lançamento. |
+| **03 - Validação** | 20 entradas inválidas, todas 400 com o código específico (`"10"`, `"-1.00"`, `"1e3"`, `NaN`, número em vez de string, `"brl"`, `"JPY"`, campo desconhecido...). |
+| **04 - Segurança** | 401 sem token, com token adulterado, de outra audiência ou expirado; 403 quando o provedor tenta rotas internas; nenhuma tentativa negada altera o saldo. |
+| **05 - Operações de aposta** | BET (201) → reenvio (200 replay, mesmo saldo) → outra BET sem saldo (422 `INSUFFICIENT_FUNDS`) → conflito de chave (409) → LOSS → WIN com referência → REFUND → ROLLBACK da mesma BET (422 `ALREADY_REVERSED`) → REFUND antes da BET (202) → consultas e isolamento entre provedores → ledger, saldo final e **reconciliação**. |
+
+### Funcionalidades novas
+
+| Pasta | O que observar |
+| --- | --- |
+| **06 - Concorrência** | **Teste obrigatório do README:** carteira com 100.00 recebe **duas BETs distintas de 80.00 ao mesmo tempo** → exatamente uma 201 e uma 422 `INSUFFICIENT_FUNDS` (saldo observado 20.00), **um único débito** no ledger, saldo final 20.00. Depois, **a mesma BET 50× ao mesmo tempo** → 1× 201 e 49× 200 (`idempotentReplay`), todas apontando para a mesma transação, saldo 90.00 e versão 2. Fecha com a reconciliação consistente. O Console mostra os status recebidos. |
+| **07 - Worker de pendências** | REFUND chega **antes** da BET → 202 `PENDING_REFERENCE`, com `nextAttemptAt`/`expiresAt` → a BET chega (201, saldo 70.00) → **sem nenhuma chamada extra**, o worker em segundo plano aplica o REFUND: a consulta mostra `PROCESSED`, saldo 100.00 e a referência resolvida. Uma WIN que referencia uma BET inexistente fica aguardando e não movimenta o ledger. |
+| **08 - Fila SQS** | O Postman envia a operação **direto para a fila** `wager-transactions.fifo` (API SQS do LocalStack) e a aplicação consome sozinha: BET via fila → `PROCESSED`, saldo 75.00. **A mesma mensagem reentregue** → a inbox descarta, e o saldo continua 75.00. **A mesma operação pelo HTTP** → 200 replay do resultado do SQS. Mensagens inválidas (valor `1e3`, provedor desconhecido) → vão **direto para a DLQ** com o atributo `failureReason` (`INVALID_MONEY`, `UNKNOWN_PROVIDER`), sem criar transação nem mexer no saldo. |
+| **09 - Eventos da outbox** | `outbox_pending_events = 0`: tudo o que foi confirmado foi publicado. Depois o Postman lê a `wallet-events.fifo` e confere os eventos da carteira do SQS: exatamente 4 (abertura + BET, cada uma com `Processed` e `BalanceChanged`), com `MessageGroupId = walletId`, atributo `eventType`, envelope completo, `eventId` único (a duplicata e o replay não publicaram nada), **versões em ordem** (v1, v2) e o evento da BET correlacionado ao `messageId` da mensagem SQS. |
+| **10 - Métricas** | Confere em `/metrics` as séries exigidas pelo README: resultados por canal (`http`, `sqs`, `worker`), replays, latência, mensagens SQS por resultado, DLQ por motivo, tentativas de pendência, publicações da outbox, atraso da outbox, reconciliação e latência HTTP por rota. O Console imprime os valores. |
 
 ## 4. Testar manualmente pelo terminal
 
@@ -48,48 +66,7 @@ curl -s -X POST localhost:8080/wallets \
   -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
 ```
 
-## 5. Ver o efeito no banco
-
-Depois de abrir carteiras, confira o que foi gravado **na mesma transação**:
-
-```sh
-docker compose exec postgres psql -U postgres -d wallet
-```
-
-```sql
-SELECT id, player_id, currency, balance, version FROM wallets ORDER BY created_at DESC LIMIT 5;
-
-SELECT kind, status, origin, amount, balance_after FROM wager_transactions ORDER BY created_at DESC LIMIT 5;
-
-SELECT direction, amount, balance_before, balance_after FROM wallet_ledger_entries ORDER BY created_at DESC LIMIT 5;
-
-SELECT event_type, correlation_id, published_at, payload->'data'->'balanceAfter'
-FROM outbox_events ORDER BY occurred_at DESC LIMIT 6;
-
--- O ledger é append-only, até para o superusuário:
-UPDATE wallet_ledger_entries SET amount = 1;
-```
-
-Os valores no banco estão em **centavos** (`BIGINT`): `100000` = `1000.00`. O `UPDATE` no ledger é recusado com `wallet_ledger_entries is append-only`. Os eventos da outbox ficam com `published_at` nulo até o publisher ser implementado (Dia 2).
-
-## 6. Ver os eventos publicados (outbox → SQS)
-
-Toda operação concluída gera eventos que o publisher envia para a fila `wallet-events.fifo` **depois do commit**:
-
-```sh
-docker compose exec postgres psql -U postgres -d wallet -c \
-  "SELECT count(*) FILTER (WHERE published_at IS NULL) AS pendentes, count(*) AS total FROM outbox_events"
-
-docker compose exec localstack awslocal sqs receive-message \
-  --queue-url http://localhost:4566/000000000000/wallet-events.fifo \
-  --max-number-of-messages 10 --message-attribute-names All --attribute-names MessageGroupId
-```
-
-O resultado esperado é `pendentes = 0` em poucos instantes. Cada mensagem tem o envelope do evento no corpo (`eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt`, `version`, `data`), o `MessageGroupId` igual ao `walletId` e o atributo `eventType` para roteamento.
-
-## 7. Enviar uma operação pela fila (SQS)
-
-A mesma operação do `POST /wagering/transactions` pode ser enviada como mensagem. Troque `<walletId>` e `<playerId>` por uma carteira criada antes:
+Para enviar uma operação pela fila, troque `<walletId>` e `<playerId>`:
 
 ```sh
 docker compose exec localstack awslocal sqs send-message \
@@ -98,4 +75,41 @@ docker compose exec localstack awslocal sqs send-message \
   --message-body '{"messageId":"msg-001","type":"WagerTransactionRequested","occurredAt":"2026-09-08T12:00:00.000Z","data":{"providerId":"provider-a","externalTransactionId":"sqs-tx-001","idempotencyKey":"provider-a:sqs-tx-001","playerId":"<playerId>","walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}}'
 ```
 
-Em seguida, consulte `GET /providers/provider-a/wagering/transactions/sqs-tx-001` ou o saldo da carteira. Uma mensagem inválida vai para `wager-transactions-dlq.fifo`, com o motivo no atributo `failureReason`.
+## 5. Ver o efeito no banco
+
+```sh
+docker compose exec postgres psql -U postgres -d wallet
+```
+
+```sql
+SELECT id, balance, version FROM wallets ORDER BY created_at DESC LIMIT 5;
+SELECT kind, status, failure_code, amount, balance_after FROM wager_transactions ORDER BY created_at DESC LIMIT 10;
+SELECT direction, amount, balance_before, balance_after FROM wallet_ledger_entries ORDER BY created_at DESC LIMIT 10;
+SELECT consumer_name, message_id, completed_at FROM inbox_messages ORDER BY received_at DESC LIMIT 5;
+SELECT event_type, attempts, published_at FROM outbox_events ORDER BY occurred_at DESC LIMIT 10;
+
+-- O ledger é append-only, até para o superusuário:
+UPDATE wallet_ledger_entries SET amount = 1;
+```
+
+Os valores estão em **centavos** (`100000` = `1000.00`). O `UPDATE` no ledger é recusado com `wallet_ledger_entries is append-only`.
+
+**Para ver a reconciliação acusando divergência:** adultere um saldo e chame a reconciliação daquela carteira. A resposta traz `consistent: false`, a `difference` e o log WARN, e a métrica `reconciliation_mismatches_total` sobe. A reconciliação nunca corrige o saldo.
+
+```sql
+UPDATE wallets SET balance = balance + 1 WHERE id = '<walletId>';
+```
+
+## 6. Ver as filas
+
+```sh
+docker compose exec localstack awslocal sqs receive-message \
+  --queue-url http://localhost:4566/000000000000/wallet-events.fifo \
+  --max-number-of-messages 10 --message-attribute-names All --attribute-names MessageGroupId
+
+docker compose exec localstack awslocal sqs receive-message \
+  --queue-url http://localhost:4566/000000000000/wager-transactions-dlq.fifo \
+  --max-number-of-messages 10 --message-attribute-names All
+```
+
+As pastas 08 e 09 **consomem e apagam** as mensagens que leem da DLQ e da fila de eventos, para que cada execução comece limpa.
