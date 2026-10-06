@@ -20,6 +20,13 @@ type Config struct {
 	InstanceID string     `env:"INSTANCE_ID"`
 	Database   Database
 	AWS        AWS
+	OIDC       OIDC
+}
+
+type OIDC struct {
+	Issuer   string `env:"OIDC_ISSUER,required,notEmpty"`
+	JWKSURL  string `env:"OIDC_JWKS_URL,required,notEmpty"`
+	Audience string `env:"OIDC_AUDIENCE" envDefault:"wagering-api"`
 }
 
 type Database struct {

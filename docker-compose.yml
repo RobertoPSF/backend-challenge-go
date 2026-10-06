@@ -25,6 +25,8 @@ services:
     command: ["start-dev", "--import-realm"]
     environment:
       KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: http://localhost:8081
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     ports:
       - "8081:8080"
     volumes:

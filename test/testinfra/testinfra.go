@@ -4,13 +4,17 @@ package testinfra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -24,6 +28,8 @@ import (
 const (
 	PostgresImage   = "postgres:16.15-alpine"
 	LocalStackImage = "localstack/localstack:4.14.0"
+	KeycloakImage   = "quay.io/keycloak/keycloak:26.8.0"
+	KeycloakIssuer  = "http://localhost:8081/realms/wagering"
 
 	database      = "wallet"
 	ownerPassword = "wallet_owner_test"
@@ -132,4 +138,67 @@ func FreeAddr(t testing.TB) string {
 	}
 	defer ln.Close()
 	return fmt.Sprintf("127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port)
+}
+
+type Keycloak struct {
+	BaseURL string
+	Issuer  string
+	JWKSURL string
+}
+
+func StartKeycloak(t testing.TB) Keycloak {
+	t.Helper()
+	ctx := context.Background()
+
+	container, err := testcontainers.Run(ctx, KeycloakImage,
+		testcontainers.WithExposedPorts("8080/tcp", "9000/tcp"),
+		testcontainers.WithCmd("start-dev", "--import-realm"),
+		testcontainers.WithEnv(map[string]string{
+			"KC_HEALTH_ENABLED":               "true",
+			"KC_HOSTNAME":                     "http://localhost:8081",
+			"KC_HOSTNAME_BACKCHANNEL_DYNAMIC": "true",
+		}),
+		testcontainers.WithFiles(testcontainers.ContainerFile{
+			HostFilePath:      filepath.Join(RepoRoot(), "deploy", "keycloak", "realm-wagering.json"),
+			ContainerFilePath: "/opt/keycloak/data/import/realm-wagering.json",
+			FileMode:          0o644,
+		}),
+		testcontainers.WithWaitStrategy(wait.ForHTTP("/health/ready").WithPort("9000/tcp").WithStartupTimeout(3*time.Minute)),
+	)
+	testcontainers.CleanupContainer(t, container)
+	if err != nil {
+		t.Fatalf("start keycloak: %v", err)
+	}
+
+	endpoint, err := container.PortEndpoint(ctx, "8080/tcp", "http")
+	if err != nil {
+		t.Fatalf("keycloak endpoint: %v", err)
+	}
+	return Keycloak{
+		BaseURL: endpoint,
+		Issuer:  KeycloakIssuer,
+		JWKSURL: endpoint + "/realms/wagering/protocol/openid-connect/certs",
+	}
+}
+
+func (k Keycloak) Token(t testing.TB, clientID string) string {
+	t.Helper()
+	form := url.Values{"grant_type": {"client_credentials"}}
+	req, _ := http.NewRequest(http.MethodPost, k.BaseURL+"/realms/wagering/protocol/openid-connect/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(clientID, clientID+"-local-secret")
+	req.Close = true
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("token for %s: %v", clientID, err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.AccessToken == "" {
+		t.Fatalf("token for %s: status %d", clientID, resp.StatusCode)
+	}
+	return body.AccessToken
 }

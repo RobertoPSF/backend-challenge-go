@@ -17,6 +17,7 @@ import (
 func TestFxApp_StartsServesAndStopsWithoutLeaks(t *testing.T) {
 	pg := testinfra.StartPostgres(t)
 	ls := testinfra.StartLocalStack(t)
+	kc := testinfra.StartKeycloak(t)
 	addr := testinfra.FreeAddr(t)
 
 	t.Setenv("HTTP_ADDR", addr)
@@ -25,6 +26,8 @@ func TestFxApp_StartsServesAndStopsWithoutLeaks(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	t.Setenv("AWS_ENDPOINT_URL", ls.Endpoint)
+	t.Setenv("OIDC_ISSUER", kc.Issuer)
+	t.Setenv("OIDC_JWKS_URL", kc.JWKSURL)
 	t.Setenv("LOG_LEVEL", "WARN")
 
 	leaks := goleak.IgnoreCurrent()

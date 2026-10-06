@@ -45,3 +45,9 @@ migrate-down-all: ## Reverte todas as migrations
 
 migrate-version: ## Mostra a versão atual do schema
 	$(MIGRATE) 'migrate -path /migrations -database "$$DATABASE_MIGRATE_URL" version'
+
+KEYCLOAK_TOKEN_URL = http://localhost:8081/realms/wagering/protocol/openid-connect/token
+
+token-%: ## Imprime um access token do client informado (ex.: make token-provider-a, make token-wallet-service)
+	@response=$$(curl -sf -u "$*:$*-local-secret" -d grant_type=client_credentials $(KEYCLOAK_TOKEN_URL)) \
+		&& echo "$$response" | sed -E 's/.*"access_token":"([^"]+)".*/\1/'

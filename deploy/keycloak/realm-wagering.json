@@ -1,4 +1,111 @@
 {
   "realm": "wagering",
-  "enabled": true
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      { "name": "provider", "description": "Game provider: submits and reads its own wager transactions" },
+      { "name": "wallet-admin", "description": "Internal service: manages wallets, ledger and reconciliation" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "provider-a",
+      "secret": "provider-a-local-secret",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        { "name": "wagering-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "wagering-api", "access.token.claim": "true", "id.token.claim": "false" } },
+        { "name": "provider-id", "protocol": "openid-connect", "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": { "claim.name": "provider_id", "claim.value": "provider-a", "jsonType.label": "String",
+                      "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false" } }
+      ]
+    },
+    {
+      "clientId": "provider-b",
+      "secret": "provider-b-local-secret",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        { "name": "wagering-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "wagering-api", "access.token.claim": "true", "id.token.claim": "false" } },
+        { "name": "provider-id", "protocol": "openid-connect", "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": { "claim.name": "provider_id", "claim.value": "provider-b", "jsonType.label": "String",
+                      "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false" } }
+      ]
+    },
+    {
+      "clientId": "provider-a-short-lived",
+      "secret": "provider-a-short-lived-local-secret",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": { "access.token.lifespan": "2" },
+      "protocolMappers": [
+        { "name": "wagering-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "wagering-api", "access.token.claim": "true", "id.token.claim": "false" } },
+        { "name": "provider-id", "protocol": "openid-connect", "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": { "claim.name": "provider_id", "claim.value": "provider-a", "jsonType.label": "String",
+                      "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false" } }
+      ]
+    },
+    {
+      "clientId": "wallet-service",
+      "secret": "wallet-service-local-secret",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        { "name": "wagering-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "wagering-api", "access.token.claim": "true", "id.token.claim": "false" } }
+      ]
+    },
+    {
+      "clientId": "no-role-client",
+      "secret": "no-role-client-local-secret",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        { "name": "wagering-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "wagering-api", "access.token.claim": "true", "id.token.claim": "false" } }
+      ]
+    },
+    {
+      "clientId": "other-api-client",
+      "secret": "other-api-client-local-secret",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    }
+  ],
+  "users": [
+    { "username": "service-account-provider-a", "enabled": true, "serviceAccountClientId": "provider-a",
+      "realmRoles": ["default-roles-wagering", "provider"] },
+    { "username": "service-account-provider-b", "enabled": true, "serviceAccountClientId": "provider-b",
+      "realmRoles": ["default-roles-wagering", "provider"] },
+    { "username": "service-account-provider-a-short-lived", "enabled": true, "serviceAccountClientId": "provider-a-short-lived",
+      "realmRoles": ["default-roles-wagering", "provider"] },
+    { "username": "service-account-wallet-service", "enabled": true, "serviceAccountClientId": "wallet-service",
+      "realmRoles": ["default-roles-wagering", "wallet-admin"] },
+    { "username": "service-account-no-role-client", "enabled": true, "serviceAccountClientId": "no-role-client",
+      "realmRoles": ["default-roles-wagering"] },
+    { "username": "service-account-other-api-client", "enabled": true, "serviceAccountClientId": "other-api-client",
+      "realmRoles": ["default-roles-wagering", "provider"] }
+  ]
 }

@@ -5,6 +5,7 @@ import (
 
 	"go.uber.org/fx"
 
+	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
 	"github.com/RobertoPSF/backend-challenge-go/internal/httpapi"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/logger"
@@ -31,6 +32,7 @@ func Options() fx.Option {
 		postgres.Module,
 		sqsclient.Module,
 		store.Module,
+		auth.Module,
 		httpapi.Module,
 	)
 }

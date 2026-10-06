@@ -264,6 +264,57 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - paginação do ledger estável por `(created_at, id)`, com lançamentos encadeados.
 - **Tempo:** a reidratação normaliza os instantes para UTC truncado em µs, porque o pgx devolve `TIMESTAMPTZ` no fuso local. O instante não muda, e o valor relido do banco fica idêntico ao criado em memória.
 
+## D-020 — IdP Keycloak, `client_credentials` e validação de tokens (etapa 1.6)
+
+- **IdP:** Keycloak 26.8 (recomendado pelo README §2), com o realm `wagering` importado no boot (`--import-realm`, `deploy/keycloak/realm-wagering.json`). Não há passo manual; o mesmo arquivo é usado no compose e nos testes.
+- **Fluxo:** `client_credentials`, de serviço para serviço. Cada provedor e o serviço interno são clients confidenciais com conta de serviço, sem fluxo de navegador nem senha de usuário (README: "cadastro de senhas e emissão própria de tokens estão fora do escopo").
+- **Identidades de teste** (secrets apenas locais, no formato `<client>-local-secret`):
+
+  | Client | Roles | `provider_id` | Uso |
+  | --- | --- | --- | --- |
+  | `provider-a` / `provider-b` | `provider` | `provider-a` / `provider-b` | Provedores de jogos |
+  | `wallet-service` | `wallet-admin` | — | Serviço interno (operações de carteira) |
+  | `provider-a-short-lived` | `provider` | `provider-a` | Token de **2s**, para o teste de token expirado |
+  | `no-role-client` | — | — | Autenticado, mas sem permissão (403) |
+  | `other-api-client` | `provider` | — | Token **sem** `aud=wagering-api` (401) |
+
+- **Endereço do Keycloak no token, problema P-004:**
+  - Opções: (a) endereço público fixo + JWKS interno × (b) `/etc/hosts` (passo manual) × (c) aceitar vários issuers (validação mais fraca).
+  - Decisão: (a). `KC_HOSTNAME=http://localhost:8081` faz **todo** token sair com `iss=http://localhost:8081/realms/wagering`, seja pedido pelo host ou pela rede interna (verificado). `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` mantém as chamadas internas por `keycloak:8080`.
+  - A aplicação valida `OIDC_ISSUER` exatamente e busca as chaves em `OIDC_JWKS_URL` (`http://keycloak:8080/.../certs`), **sem discovery**, com `oidc.NewRemoteKeySet` + `oidc.NewVerifier`.
+- **Validação do token** (`coreos/go-oidc/v3`):
+  - assinatura **RS256** com as chaves do JWKS, em cache e com rotação automática quando aparece um `kid` novo;
+  - `iss` exatamente igual a `OIDC_ISSUER`;
+  - `aud` contendo `OIDC_AUDIENCE` (`wagering-api`, posto por um audience mapper em cada client que pode chamar a API);
+  - `exp` no futuro.
+- **Inicialização:** o `OnStart` do verificador busca o JWKS uma vez e falha se o endpoint estiver inacessível ou sem chaves, o que valida a dependência no boot (testado). O cliente HTTP é dedicado, e suas conexões são fechadas no `OnStop`.
+
+## D-021 — Modelo de autorização (etapa 1.6)
+
+- **`providerId` vem de uma claim própria `provider_id`**, posta por um mapper fixo em cada client de provedor.
+  - Alternativa: usar o `client_id` (`azp`).
+  - Motivo: separa a credencial da identidade de negócio, o que permite trocar o client, ter dois clients para o mesmo provedor ou renomear sem afetar as transações gravadas.
+  - Isso dá ao token `provider-a-short-lived` o mesmo `provider_id=provider-a`.
+- **Permissões por roles do realm**, lidas de `realm_access.roles`:
+  - Alternativa: scopes OAuth, mais granulares e com mais configuração.
+  - `provider`: enviar e consultar as **próprias** transações. Exige também uma `provider_id` não vazia; uma credencial com a role e sem a claim recebe 403.
+  - `wallet-admin`: operações de carteira (abertura, consulta, ledger, reconciliação), restritas ao serviço interno (README §2).
+- **Middlewares** (`internal/httpapi/auth.go`):
+  - `Authenticate`: exige `Authorization: Bearer <jwt>`. Sem token, com outro esquema ou com token inválido, expirado, de outro issuer ou com outra audiência: **401** `{"error":{"code":"UNAUTHENTICATED"}}` com `WWW-Authenticate: Bearer realm="wagering", error="invalid_token"`. O `Principal` (`sub`, `azp`, `provider_id`, roles) vai para o contexto.
+  - `RequireRole(role)`: sem a role, **403** `{"error":{"code":"FORBIDDEN"}}`.
+  - Tokens nunca são logados; uma falha de autenticação loga só o caminho e o motivo.
+- **Regras por recurso** (aplicadas nas etapas 1.7 e 2.4):
+  - `providerId` do corpo igual ao do token, senão 403 **antes de qualquer escrita**;
+  - transações de outro provedor → 404, para não revelar a existência;
+  - idempotência sempre escopada pelo `provider_id` do token.
+- **Mensageria:** sem token no SQS. O acesso será controlado por credenciais e políticas do broker, e as validações de domínio continuam no consumidor (etapa 2.6).
+- **Verificado em teste** (`TestAuth_RealKeycloak`, 16 casos com Keycloak real):
+  - 200 para provedor e serviço interno, com o `providerId` correto;
+  - 401 para cabeçalho ausente, esquema `Basic`, bearer vazio, JWT malformado, assinatura adulterada, payload adulterado, audiência errada, outro issuer e **token expirado** (client de 2s);
+  - 403 para provedor em rota interna, serviço interno em rota de provedor e client sem roles;
+  - o verificador não inicia sem JWKS.
+- **Comandos:** `make token-provider-a`, `make token-provider-b` e `make token-wallet-service` imprimem um access token; um client inexistente faz o comando falhar.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -275,8 +326,9 @@ O `golang-migrate` retorna `error: first .: file does not exist` quando não há
 ### P-003 — Imagem do Keycloak sem curl/wget para o healthcheck (etapa 1.1)
 O healthcheck usa `/dev/tcp` do bash contra o endpoint de health da porta de gestão (9000), com `KC_HEALTH_ENABLED=true`.
 
-### P-004 — Issuer do Keycloak depende de como ele é acessado (pendente, etapa 1.6)
-Acessado pelo host, o `issuer` é `http://localhost:8081/realms/wagering`. De dentro da rede do compose, seria `http://keycloak:8080/...`. Tokens obtidos pelo host não validariam na aplicação. Será resolvido na etapa 1.6, com trade-offs apresentados.
+### P-004 — Issuer do Keycloak depende de como ele é acessado (resolvido na etapa 1.6)
+Acessado pelo host, o `issuer` era `http://localhost:8081/realms/wagering`; de dentro da rede do compose, seria `http://keycloak:8080/...`. Tokens obtidos pelo host não validariam na aplicação.
+- **Resolução (D-020):** `KC_HOSTNAME` fixa o `iss`; a aplicação valida `OIDC_ISSUER` e busca as chaves em `OIDC_JWKS_URL`, pela rede interna.
 
 ### P-005 — Testes do Runner com condição de corrida no próprio teste (etapa 1.2)
 Dois testes chamavam `Stop` logo depois de `Start`. A goroutine às vezes ainda não tinha entrado em `RunOnce`, via o contexto já cancelado e saía sem executá-lo, o que é o comportamento correto do Runner. Os testes passaram a esperar um sinal `started` antes do `Stop`. Rodados com `-race -count=3` sem falhas.
@@ -288,3 +340,9 @@ Para `LOG_LEVEL=LOUD`, o `caarlos0/env` retorna `parse error on field "LogLevel"
 No SQL, `NULL <> ''` resulta em `NULL`, e um `CHECK` só rejeita quando o resultado é `false`. A primeira versão de `wt_external_has_required_data_ck` e de `wt_reversal_has_reference_ck` aceitava transação externa sem `provider_id` e REFUND sem referência. O caso do REFUND estava mascarado nos testes porque outra constraint falhava antes.
 - **Correção:** `COALESCE(col, '') <> ''`.
 - **Prevenção:** os testes passaram a verificar o **nome** da constraint violada, não só o código do erro, e cobrem `NULL` e `''` para cada campo obrigatório.
+
+### P-008 — Alvo `make token-%` terminava com sucesso para client inexistente (etapa 1.6)
+No pipe `curl | sed`, o status de saída é o do `sed`, então uma falha do `curl` não aparecia. O alvo passou a guardar a resposta numa variável e só segue com `&&`; agora retorna erro (`Error 22`).
+
+### P-009 — Teste do Fx quebrou com as variáveis de OIDC obrigatórias (etapa 1.6)
+Regressão esperada, pega pela verificação de fim de etapa. O teste agora sobe também o Keycloak real e define `OIDC_ISSUER`/`OIDC_JWKS_URL`. O tempo da suíte de integração subiu para cerca de 80s; se crescer demais, considerar compartilhar os containers por pacote.
