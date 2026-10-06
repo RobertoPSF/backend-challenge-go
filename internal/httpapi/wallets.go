@@ -55,13 +55,40 @@ type ledgerPageResponse struct {
 	NextCursor *string               `json:"nextCursor"`
 }
 
-type WalletHandlers struct {
-	wallets *app.Wallets
-	log     *slog.Logger
+type reconciliationResponse struct {
+	WalletID          uuid.UUID    `json:"walletId"`
+	StoredBalance     domain.Money `json:"storedBalance"`
+	CalculatedBalance domain.Money `json:"calculatedBalance"`
+	Difference        domain.Money `json:"difference"`
+	Consistent        bool         `json:"consistent"`
+	CheckedEntries    int          `json:"checkedEntries"`
 }
 
-func NewWalletHandlers(wallets *app.Wallets, log *slog.Logger) *WalletHandlers {
-	return &WalletHandlers{wallets: wallets, log: log}
+type WalletHandlers struct {
+	wallets    *app.Wallets
+	reconciler *app.Reconciler
+	log        *slog.Logger
+}
+
+func NewWalletHandlers(wallets *app.Wallets, reconciler *app.Reconciler, log *slog.Logger) *WalletHandlers {
+	return &WalletHandlers{wallets: wallets, reconciler: reconciler, log: log}
+}
+
+func (h *WalletHandlers) Reconcile(w http.ResponseWriter, r *http.Request) {
+	id, err := uuidParam(r, "walletId")
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	rec, err := h.reconciler.Reconcile(r.Context(), id)
+	if err != nil {
+		writeAppError(w, r, h.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reconciliationResponse{
+		WalletID: rec.WalletID, StoredBalance: rec.StoredBalance, CalculatedBalance: rec.CalculatedBalance,
+		Difference: rec.Difference, Consistent: rec.Consistent, CheckedEntries: rec.CheckedEntries,
+	})
 }
 
 func (h *WalletHandlers) Open(w http.ResponseWriter, r *http.Request) {

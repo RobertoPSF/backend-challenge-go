@@ -653,6 +653,24 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - **queda entre o commit e a publicação**: eventos pendentes assumidos por outro publisher.
   - Compose: depois de toda a collection do Postman, **83/83 eventos publicados**, visíveis na `wallet-events.fifo`.
 
+## D-030 — Reconciliação (etapa 2.8)
+
+- **Contexto:** o README (§9) pede reconstruir o saldo a partir do ledger, incluindo a abertura, e compará-lo "em uma visão consistente dos dados", com `difference` = armazenado − reconstruído. Pede também reportar divergências na resposta, nos logs e em métrica, sem alterar o saldo.
+- **Rota:** `POST /wallets/{walletId}/reconciliation`, restrita a `wallet-admin` (provedor → 403).
+- **Visão consistente:** `store.ReadSnapshot` abre uma transação **`REPEATABLE READ, READ ONLY`**. A leitura da carteira e a soma do ledger usam **o mesmo snapshot**: uma operação confirmada entre as duas leituras não aparece em nenhuma delas. Por ser `READ ONLY`, é impossível alterar o saldo por esse caminho.
+- **Cálculo:**
+  - `SUM(CASE direction WHEN 'CREDIT' THEN amount ELSE -amount END)` em `NUMERIC`, para não estourar durante a soma, convertido para `BIGINT` só se couber, senão `ErrSumOutOfRange`;
+  - `count(*)` dá o `checkedEntries`;
+  - `difference = stored.Sub(calculated)`, com a moeda da carteira e overflow checado.
+- **Resposta:** `{walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries}`, com os valores em `Money` (string decimal + moeda). `difference` pode ser negativa.
+- **Divergência:** log `WARN "reconciliation mismatch"` com `walletId`, os três valores e `checkedEntries`, mais a métrica `reconciliation_mismatches_total`. O saldo **não** é corrigido: a correção, se necessária, deve ser feita com lançamentos novos (ledger append-only, README §5.5).
+- **Testes** (`TestWagerAPI`, aplicação completa):
+  - exemplo do README: abertura de 1000.00 + BET de 25.00 → 975.00 / 975.00 / 0.00, `consistent: true`, `checkedEntries: 2`;
+  - carteira com saldo zero → 0 lançamentos, consistente;
+  - **saldo adulterado direto no banco** (+0.01) → `consistent: false`, `difference: 0.01`, métrica +1, log WARN, e a carteira **não** foi alterada (saldo e versão iguais);
+  - 404 para carteira inexistente, 403 para provedor.
+  - Postman: reconciliação da carteira do roteiro (150.00, 4 lançamentos, consistente).
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

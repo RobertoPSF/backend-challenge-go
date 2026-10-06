@@ -12,7 +12,7 @@ import (
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 )
 
-var Module = fx.Module("app", fx.Provide(NewWallets, NewWagers))
+var Module = fx.Module("app", fx.Provide(NewWallets, NewWagers, NewReconciler))
 
 var (
 	ErrNotFound    = errors.New("resource not found")

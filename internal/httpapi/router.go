@@ -29,6 +29,7 @@ func NewRouter(reg *prometheus.Registry, health *Health, verifier *auth.Verifier
 			r.Post("/wallets", wallets.Open)
 			r.Get("/wallets/{walletId}", wallets.Get)
 			r.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+			r.Post("/wallets/{walletId}/reconciliation", wallets.Reconcile)
 		})
 
 		r.With(RequireRole(auth.RoleProvider)).Post("/wagering/transactions", wagers.Submit)

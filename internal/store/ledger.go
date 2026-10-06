@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,4 +73,24 @@ func scanLedgerEntry(row pgx.CollectableRow) (domain.LedgerEntry, error) {
 		return domain.LedgerEntry{}, err
 	}
 	return domain.RehydrateLedgerEntry(id, walletID, transactionID, domain.Direction(direction), amountM, beforeM, afterM, createdAt)
+}
+
+var ErrSumOutOfRange = errors.New("ledger sum out of int64 range")
+
+func (r LedgerRepo) Totals(ctx context.Context, walletID uuid.UUID) (net int64, entries int, err error) {
+	var sum *int64
+	err = r.q.QueryRow(ctx, `
+		SELECT CASE WHEN total BETWEEN -9223372036854775808 AND 9223372036854775807 THEN total::bigint END, entries
+		FROM (
+			SELECT COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount::numeric ELSE -amount::numeric END), 0) AS total,
+			       count(*) AS entries
+			FROM wallet_ledger_entries WHERE wallet_id = $1
+		) totals`, walletID).Scan(&sum, &entries)
+	if err != nil {
+		return 0, 0, err
+	}
+	if sum == nil {
+		return 0, 0, ErrSumOutOfRange
+	}
+	return *sum, entries, nil
 }

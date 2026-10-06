@@ -1,6 +1,6 @@
 # Roteiro de testes via Postman
 
-Collection: [`wallet-api.postman_collection.json`](wallet-api.postman_collection.json), com 70 requisições e 193 asserções automáticas.
+Collection: [`wallet-api.postman_collection.json`](wallet-api.postman_collection.json), com 72 requisições e 199 asserções automáticas.
 
 Cobre tokens, health, carteiras, ledger, validação de entrada, segurança e as **operações de aposta** (BET, WIN, LOSS, REFUND, ROLLBACK, idempotência, pendência e isolamento entre provedores). SQS, publicação da outbox, worker de pendências e reconciliação entram nas próximas etapas, e a collection será ampliada.
 
@@ -35,7 +35,7 @@ docker run --rm --network host -v "$PWD/docs/postman:/etc/newman" postman/newman
 | **02 - Carteiras** | Abertura com 1000.00 BRL: 201, `version: 1`, valor como **string decimal**, `Location` e `X-Correlation-Id` devolvido. O ledger mostra o crédito de abertura 0.00 → 1000.00. O mesmo jogador e moeda dá **409**; outra moeda é aceita. Saldo zero não cria lançamento. |
 | **03 - Validação** | 20 entradas inválidas, todas **400** com o código específico (`INVALID_MONEY`, `INVALID_CURRENCY`, `INVALID_REQUEST`): `"10"`, `"10.5"`, `"-1.00"`, `"1e3"`, `NaN`, valor acima do limite, número em vez de string, `"brl"`, `"JPY"`, campo desconhecido, JSON quebrado, `limit` e `cursor` inválidos, carteira inexistente (404). |
 | **04 - Segurança** | 401 para requisição sem token, esquema `Basic`, token adulterado, outra audiência e **token expirado**. 403 quando o provedor tenta operações de carteira ou quando o client não tem roles. A última requisição confirma que **nenhuma tentativa negada alterou o saldo**. |
-| **05 - Operações de aposta** | Carteira com 100.00: **BET 80.00** → 201, saldo 20.00; **reenvio** → 200 `idempotentReplay: true` com o mesmo saldo; **outra BET 80.00** → 422 `INSUFFICIENT_FUNDS` com saldo observado 20.00; mesma chave com outro valor → 409; **LOSS** → saldo inalterado; **WIN** referenciando a BET → 70.00; **REFUND** da BET → 150.00; **ROLLBACK** da mesma BET → 422 `ALREADY_REVERSED`; REFUND antes da BET existir → **202 `PENDING_REFERENCE`**, acompanhável pelo `Location`; consultas pelo ID interno e pelo ID externo; provider-b não enxerga (404) nem consulta a rota do provider-a (403); serviço interno não envia apostas (403). Termina conferindo o ledger (4 lançamentos) e o saldo final 150.00, versão 4. |
+| **05 - Operações de aposta** | Carteira com 100.00: **BET 80.00** → 201, saldo 20.00; **reenvio** → 200 `idempotentReplay: true` com o mesmo saldo; **outra BET 80.00** → 422 `INSUFFICIENT_FUNDS` com saldo observado 20.00; mesma chave com outro valor → 409; **LOSS** → saldo inalterado; **WIN** referenciando a BET → 70.00; **REFUND** da BET → 150.00; **ROLLBACK** da mesma BET → 422 `ALREADY_REVERSED`; REFUND antes da BET existir → **202 `PENDING_REFERENCE`**, acompanhável pelo `Location`; consultas pelo ID interno e pelo ID externo; provider-b não enxerga (404) nem consulta a rota do provider-a (403); serviço interno não envia apostas (403). Termina conferindo o ledger (4 lançamentos), o saldo final 150.00 (versão 4) e a **reconciliação** (`consistent: true`, 4 lançamentos conferidos). |
 
 ## 4. Testar manualmente pelo terminal
 

@@ -2744,6 +2744,64 @@
             "url": "{{baseUrl}}/wallets/{{wagerWalletId}}",
             "description": ""
           }
+        },
+        {
+          "name": "Reconciliação: ledger confere com o saldo (150.00, 4 lançamentos)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"consistent\", () => pm.expect(b.consistent).to.eql(true));",
+                  "pm.test(\"stored = calculated = 150.00\", () => {",
+                  "  pm.expect(b.storedBalance).to.eql({ amount: \"150.00\", currency: \"BRL\" });",
+                  "  pm.expect(b.calculatedBalance).to.eql({ amount: \"150.00\", currency: \"BRL\" });",
+                  "});",
+                  "pm.test(\"difference 0.00\", () => pm.expect(b.difference.amount).to.eql(\"0.00\"));",
+                  "pm.test(\"4 ledger entries checked\", () => pm.expect(b.checkedEntries).to.eql(4));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{wagerWalletId}}/reconciliation",
+            "description": ""
+          }
+        },
+        {
+          "name": "Reconciliação pelo provedor -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{wagerWalletId}}/reconciliation",
+            "description": ""
+          }
         }
       ]
     }

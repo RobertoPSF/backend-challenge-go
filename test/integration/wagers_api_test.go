@@ -3,7 +3,10 @@
 package integration
 
 import (
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,6 +255,56 @@ func TestWagerAPI(t *testing.T) {
 		}
 	})
 
+	t.Run("reconciliation rebuilds the balance from the ledger without changing it", func(t *testing.T) {
+		reconcile := func(walletID, token string) response {
+			return doRequest(t, http.MethodPost, a.BaseURL+"/wallets/"+walletID+"/reconciliation", token, nil, nil)
+		}
+		amountOf := func(r response, field string) string {
+			m, _ := r.Body[field].(map[string]any)
+			v, _ := m["amount"].(string)
+			return v
+		}
+
+		w := openAPIWallet(t, a, admin, "1000.00")
+		submit(t, a, providerA, "provider-a", w, "BET", "25.00", ext(), "")
+		res := reconcile(w.ID, admin)
+		if res.Status != http.StatusOK || res.Body["walletId"] != w.ID || amountOf(res, "storedBalance") != "975.00" ||
+			amountOf(res, "calculatedBalance") != "975.00" || amountOf(res, "difference") != "0.00" ||
+			res.Body["consistent"] != true || res.Body["checkedEntries"] != float64(2) {
+			t.Fatalf("README example = %d %s", res.Status, res.Raw)
+		}
+
+		empty := openAPIWallet(t, a, admin, "0.00")
+		if res := reconcile(empty.ID, admin); res.Body["consistent"] != true || res.Body["checkedEntries"] != float64(0) {
+			t.Errorf("zero wallet = %s", res.Raw)
+		}
+
+		before := mismatchesMetric(t, a)
+		if _, err := a.DB.Exec(t.Context(), `UPDATE wallets SET balance = balance + 1 WHERE id = $1`, w.ID); err != nil {
+			t.Fatal(err)
+		}
+		res = reconcile(w.ID, admin)
+		if res.Body["consistent"] != false || amountOf(res, "difference") != "0.01" || amountOf(res, "storedBalance") != "975.01" ||
+			amountOf(res, "calculatedBalance") != "975.00" {
+			t.Fatalf("tampered = %s", res.Raw)
+		}
+		if after := mismatchesMetric(t, a); after != before+1 {
+			t.Errorf("reconciliation_mismatches_total %v -> %v, want +1", before, after)
+		}
+		var balance, version int64
+		_ = a.DB.QueryRow(t.Context(), `SELECT balance, version FROM wallets WHERE id = $1`, w.ID).Scan(&balance, &version)
+		if balance != 97501 || version != 2 {
+			t.Errorf("reconciliation changed the wallet: %d v%d", balance, version)
+		}
+
+		if res := reconcile(uuid.NewString(), admin); res.Status != http.StatusNotFound {
+			t.Errorf("unknown wallet = %d", res.Status)
+		}
+		if res := reconcile(w.ID, providerA); res.Status != http.StatusForbidden {
+			t.Errorf("provider = %d", res.Status)
+		}
+	})
+
 	t.Run("80.00 + 80.00 over 100.00 through HTTP", func(t *testing.T) {
 		w := openAPIWallet(t, a, admin, "100.00")
 		ids := []string{ext(), ext()}
@@ -303,4 +356,22 @@ func runParallelHTTP(n int, fn func(i int)) {
 	for range n {
 		<-done
 	}
+}
+
+func mismatchesMetric(t *testing.T, a testApp) float64 {
+	t.Helper()
+	resp, err := http.Get(a.BaseURL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "reconciliation_mismatches_total ") {
+			v, _ := strconv.ParseFloat(strings.TrimPrefix(line, "reconciliation_mismatches_total "), 64)
+			return v
+		}
+	}
+	t.Fatal("reconciliation_mismatches_total not exposed")
+	return 0
 }

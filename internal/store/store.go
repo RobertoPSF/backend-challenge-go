@@ -92,6 +92,18 @@ func (s *Store) InTx(ctx context.Context, fn func(r *Repos) error) error {
 	return fmt.Errorf("%w: %w", ErrConcurrentUpdate, err)
 }
 
+func (s *Store) ReadSnapshot(ctx context.Context, fn func(r *Repos) error) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Classify(ctx, err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := fn(newRepos(tx)); err != nil {
+		return Classify(ctx, err)
+	}
+	return Classify(ctx, tx.Commit(ctx))
+}
+
 func (s *Store) runTx(ctx context.Context, fn func(r *Repos) error) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
