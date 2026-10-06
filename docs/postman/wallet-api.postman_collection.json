@@ -1,0 +1,1718 @@
+{
+  "info": {
+    "name": "Wallet API - Backend Challenge",
+    "description": "Roteiro de testes manuais/automatizados. Rode a collection inteira em ordem (Collection Runner) com o ambiente local de pé (docker compose up --build). Veja docs/postman/ROTEIRO.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloakUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "providerToken",
+      "value": ""
+    },
+    {
+      "key": "noRoleToken",
+      "value": ""
+    },
+    {
+      "key": "otherAudienceToken",
+      "value": ""
+    },
+    {
+      "key": "shortLivedToken",
+      "value": ""
+    },
+    {
+      "key": "tamperedToken",
+      "value": ""
+    },
+    {
+      "key": "playerId",
+      "value": ""
+    },
+    {
+      "key": "walletId",
+      "value": ""
+    },
+    {
+      "key": "zeroWalletId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Tokens (Keycloak, client_credentials)",
+      "item": [
+        {
+          "name": "Token wallet-service (role wallet-admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"adminToken\", body.access_token);",
+                  "const claims = JSON.parse(atob(body.access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "console.log(\"wallet-service claims\", { iss: claims.iss, aud: claims.aud, provider_id: claims.provider_id, roles: claims.realm_access && claims.realm_access.roles, expiresIn: claims.exp - claims.iat });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/wagering/protocol/openid-connect/token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "wallet-service"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "wallet-service-local-secret"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Token provider-a (role provider)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"providerToken\", body.access_token);",
+                  "const claims = JSON.parse(atob(body.access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "console.log(\"provider-a claims\", { iss: claims.iss, aud: claims.aud, provider_id: claims.provider_id, roles: claims.realm_access && claims.realm_access.roles, expiresIn: claims.exp - claims.iat });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/wagering/protocol/openid-connect/token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "provider-a"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "provider-a-local-secret"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Token no-role-client (sem roles)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"noRoleToken\", body.access_token);",
+                  "const claims = JSON.parse(atob(body.access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "console.log(\"no-role-client claims\", { iss: claims.iss, aud: claims.aud, provider_id: claims.provider_id, roles: claims.realm_access && claims.realm_access.roles, expiresIn: claims.exp - claims.iat });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/wagering/protocol/openid-connect/token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "no-role-client"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "no-role-client-local-secret"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Token other-api-client (audience errada)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"otherAudienceToken\", body.access_token);",
+                  "const claims = JSON.parse(atob(body.access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "console.log(\"other-api-client claims\", { iss: claims.iss, aud: claims.aud, provider_id: claims.provider_id, roles: claims.realm_access && claims.realm_access.roles, expiresIn: claims.exp - claims.iat });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/wagering/protocol/openid-connect/token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "other-api-client"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "other-api-client-local-secret"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Token provider-a-short-lived (expira em 2s)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"shortLivedToken\", body.access_token);",
+                  "const claims = JSON.parse(atob(body.access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "console.log(\"provider-a-short-lived claims\", { iss: claims.iss, aud: claims.aud, provider_id: claims.provider_id, roles: claims.realm_access && claims.realm_access.roles, expiresIn: claims.exp - claims.iat });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/wagering/protocol/openid-connect/token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "provider-a-short-lived"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "provider-a-short-lived-local-secret"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Token com secret errado -> 401 do Keycloak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Keycloak rejects invalid credentials\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/wagering/protocol/openid-connect/token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "provider-a"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "wrong"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 - Health e métricas (públicos)",
+      "item": [
+        {
+          "name": "Liveness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status ok\", () => pm.expect(pm.response.json().status).to.eql(\"ok\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health/live",
+            "description": ""
+          }
+        },
+        {
+          "name": "Readiness (Postgres + SQS)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"postgres ok\", () => pm.expect(b.checks.postgres).to.eql(\"ok\"));",
+                  "pm.test(\"sqs ok\", () => pm.expect(b.checks.sqs).to.eql(\"ok\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health/ready",
+            "description": ""
+          }
+        },
+        {
+          "name": "Métricas Prometheus",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"exposes Go runtime metrics\", () => pm.expect(pm.response.text()).to.include(\"go_goroutines\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/metrics",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 - Carteiras (caminho feliz)",
+      "item": [
+        {
+          "name": "Abrir carteira com 1000.00 BRL -> 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"playerId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"walletId\", b.id);",
+                  "pm.test(\"balance 1000.00 BRL as decimal string\", () => pm.expect(b.balance).to.eql({ amount: \"1000.00\", currency: \"BRL\" }));",
+                  "pm.test(\"version 1\", () => pm.expect(b.version).to.eql(1));",
+                  "pm.test(\"playerId echoed\", () => pm.expect(b.playerId).to.eql(pm.collectionVariables.get(\"playerId\")));",
+                  "pm.test(\"Location header\", () => pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/wallets/\" + b.id));",
+                  "pm.test(\"correlation id echoed\", () => pm.expect(pm.response.headers.get(\"X-Correlation-Id\")).to.eql(\"postman-open-\" + b.playerId));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "X-Correlation-Id",
+                "value": "postman-open-{{playerId}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{playerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"1000.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Consultar carteira -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"same wallet\", () => pm.expect(b.id).to.eql(pm.collectionVariables.get(\"walletId\")));",
+                  "pm.test(\"balance 1000.00\", () => pm.expect(b.balance.amount).to.eql(\"1000.00\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ledger da carteira -> crédito de abertura",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"one entry (opening)\", () => pm.expect(b.items).to.have.length(1));",
+                  "const e = b.items[0];",
+                  "pm.test(\"CREDIT 0.00 -> 1000.00\", () => {",
+                  "  pm.expect(e.direction).to.eql(\"CREDIT\");",
+                  "  pm.expect(e.balanceBefore.amount).to.eql(\"0.00\");",
+                  "  pm.expect(e.balanceAfter.amount).to.eql(\"1000.00\");",
+                  "});",
+                  "pm.test(\"no next page\", () => pm.expect(b.nextCursor).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}/ledger",
+            "description": ""
+          }
+        },
+        {
+          "name": "Mesmo jogador e moeda -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error code WALLET_ALREADY_EXISTS\", () => pm.expect(pm.response.json().error.code).to.eql(\"WALLET_ALREADY_EXISTS\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{playerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"5.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Mesmo jogador, outra moeda (USD) -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"USD wallet\", () => pm.expect(pm.response.json().balance).to.eql({ amount: \"5.00\", currency: \"USD\" }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{playerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"5.00\",\n    \"currency\": \"USD\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Abrir carteira com saldo zero -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"zeroWalletId\", b.id);",
+                  "pm.test(\"balance 0.00, version 1\", () => { pm.expect(b.balance.amount).to.eql(\"0.00\"); pm.expect(b.version).to.eql(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"0.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Ledger da carteira zerada -> vazio (sem OPENING)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"no ledger entries\", () => pm.expect(pm.response.json().items).to.have.length(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{zeroWalletId}}/ledger",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ledger com limit=1 -> cursor nulo (só 1 lançamento)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"one item and no next cursor\", () => {",
+                  "  const b = pm.response.json();",
+                  "  pm.expect(b.items).to.have.length(1);",
+                  "  pm.expect(b.nextCursor).to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}/ledger?limit=1",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Validação de entrada (nenhuma escrita)",
+      "item": [
+        {
+          "name": "Valor sem casas decimais (\"10\") -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"10\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Valor com 1 casa (\"10.5\") -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"10.5\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Valor com 3 casas (\"10.555\") -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"10.555\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Valor negativo (\"-1.00\") -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"-1.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Notação científica (\"1e3\") -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"1e3\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "NaN -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"NaN\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Valor acima do limite do int64 -> 400 INVALID_MONEY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_MONEY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_MONEY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"92233720368547758.08\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Valor numérico em vez de string (10.50) -> 400 INVALID_REQUEST",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": { \"amount\": 10.50, \"currency\": \"BRL\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Moeda em minúsculas (\"brl\") -> 400 INVALID_CURRENCY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_CURRENCY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_CURRENCY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"brl\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Moeda não suportada (\"JPY\") -> 400 INVALID_CURRENCY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_CURRENCY\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_CURRENCY\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"JPY\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Campo desconhecido no corpo -> 400 INVALID_REQUEST",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": { \"amount\": \"1.00\", \"currency\": \"BRL\" },\n  \"bonus\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "playerId inválido -> 400 INVALID_REQUEST",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"player-1\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Sem initialBalance -> 400 INVALID_REQUEST",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "JSON malformado -> 400 INVALID_REQUEST",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"playerId\": ",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET carteira com id inválido -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/not-a-uuid",
+            "description": ""
+          }
+        },
+        {
+          "name": "GET carteira inexistente -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error code NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"NOT_FOUND\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{$guid}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ledger de carteira inexistente -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error code NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"NOT_FOUND\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{$guid}}/ledger",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ledger com limit=0 -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}/ledger?limit=0",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ledger com limit=201 -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}/ledger?limit=201",
+            "description": ""
+          }
+        },
+        {
+          "name": "Ledger com cursor adulterado -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code INVALID_REQUEST\", () => pm.expect(pm.response.json().error.code).to.eql(\"INVALID_REQUEST\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}/ledger?cursor=garbage",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Autenticação e autorização",
+      "item": [
+        {
+          "name": "Sem token -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error code UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));",
+                  "",
+                  "pm.test(\"WWW-Authenticate header\", () => pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.include(\"Bearer\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Esquema Basic em vez de Bearer -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error code UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic cHJvdmlkZXItYTpzZWNyZXQ="
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Token adulterado (assinatura inválida) -> 401",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get(\"adminToken\");",
+                  "pm.collectionVariables.set(\"tamperedToken\", t.slice(0, -4) + (t.endsWith(\"AAAA\") ? \"BBBB\" : \"AAAA\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error code UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tamperedToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Token de outra audiência -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error code UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAudienceToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Token expirado (espera 3s) -> 401",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error code UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{shortLivedToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Provedor abrindo carteira -> 403 (sem escrita)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"error code FORBIDDEN\", () => pm.expect(pm.response.json().error.code).to.eql(\"FORBIDDEN\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Provedor consultando carteira -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"error code FORBIDDEN\", () => pm.expect(pm.response.json().error.code).to.eql(\"FORBIDDEN\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Provedor consultando ledger -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"error code FORBIDDEN\", () => pm.expect(pm.response.json().error.code).to.eql(\"FORBIDDEN\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{providerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}/ledger",
+            "description": ""
+          }
+        },
+        {
+          "name": "Client sem roles -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"error code FORBIDDEN\", () => pm.expect(pm.response.json().error.code).to.eql(\"FORBIDDEN\"));",
+                  "pm.test(\"error carries correlationId\", () => pm.expect(pm.response.json().error.correlationId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{noRoleToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Saldo continua 1000.00 após as tentativas negadas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"balance unchanged\", () => pm.expect(pm.response.json().balance.amount).to.eql(\"1000.00\"));",
+                  "pm.test(\"version unchanged\", () => pm.expect(pm.response.json().version).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/wallets/{{walletId}}",
+            "description": ""
+          }
+        }
+      ]
+    }
+  ]
+}
