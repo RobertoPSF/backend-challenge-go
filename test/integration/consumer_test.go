@@ -22,6 +22,7 @@ import (
 	"github.com/RobertoPSF/backend-challenge-go/internal/consumer"
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/sqsclient"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 	"github.com/RobertoPSF/backend-challenge-go/test/testinfra"
@@ -58,7 +59,7 @@ func newConsumerEnv(t *testing.T) consumerEnv {
 }
 
 func (e consumerEnv) consumerFor(wagers *app.Wagers) *consumer.Consumer {
-	return consumer.New(e.sqs, wagers, e.cfg, silentLog)
+	return consumer.New(e.sqs, wagers, e.cfg, e.envs[0].metrics, silentLog)
 }
 
 func (e consumerEnv) send(t *testing.T, body string, groupID string) {
@@ -277,6 +278,23 @@ func TestSQSConsumer(t *testing.T) {
 		}
 	})
 
+	t.Run("consumer metrics count processed, duplicate and dead-lettered messages", func(t *testing.T) {
+		reg := env.envs[0].reg
+		for result, min := range map[string]float64{"processed": 1, "duplicate": 1, "dead_letter": 1} {
+			if v := metricValue(t, reg, "sqs_messages_total", "result", result); v < min {
+				t.Errorf("sqs_messages_total{result=%q} = %v", result, v)
+			}
+		}
+		for _, reason := range []string{"MESSAGE_ID_CONFLICT", "INVALID_MESSAGE", "UNKNOWN_PROVIDER", "WALLET_NOT_FOUND"} {
+			if v := metricValue(t, reg, "sqs_dead_letters_total", "reason", reason); v < 1 {
+				t.Errorf("sqs_dead_letters_total{reason=%q} = %v", reason, v)
+			}
+		}
+		if v := metricValue(t, reg, "wager_idempotent_replays_total", "channel", "sqs"); v < 1 {
+			t.Errorf("sqs replays = %v", v)
+		}
+	})
+
 	t.Run("transient failure is retried with backoff and then succeeds", func(t *testing.T) {
 		broken := env.consumerFor(brokenWagers(t, env.cfg))
 		w := env.openWallet(t, "100.00")
@@ -326,5 +344,6 @@ func brokenWagers(t *testing.T, cfg config.Config) *app.Wagers {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return app.NewWagers(store.New(pool, prometheus.NewRegistry(), silentLog), cfg)
+	m := metrics.New(prometheus.NewRegistry())
+	return app.NewWagers(store.New(pool, m, silentLog), cfg, m)
 }

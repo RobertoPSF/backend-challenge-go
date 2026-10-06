@@ -11,13 +11,21 @@ import (
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
+)
+
+const (
+	ChannelHTTP   = "http"
+	ChannelSQS    = "sqs"
+	ChannelWorker = "worker"
 )
 
 type WagerCommand struct {
 	Request       domain.WagerRequest
 	CorrelationID string
 	CausationID   string
+	Channel       string
 }
 
 type WagerResult struct {
@@ -28,11 +36,24 @@ type WagerResult struct {
 type Wagers struct {
 	store   *store.Store
 	pending config.Pending
+	metrics *metrics.Metrics
 	now     func() time.Time
 }
 
-func NewWagers(st *store.Store, cfg config.Config) *Wagers {
-	return &Wagers{store: st, pending: cfg.Pending, now: time.Now}
+func NewWagers(st *store.Store, cfg config.Config, m *metrics.Metrics) *Wagers {
+	return &Wagers{store: st, pending: cfg.Pending, metrics: m, now: time.Now}
+}
+
+func (s *Wagers) record(channel string, started time.Time, result WagerResult) {
+	s.metrics.ProcessingDuration.WithLabelValues(channel).Observe(time.Since(started).Seconds())
+	if result.Transaction == nil {
+		return
+	}
+	if result.Replay {
+		s.metrics.IdempotentReplays.WithLabelValues(channel).Inc()
+		return
+	}
+	s.metrics.WagerTransactions.WithLabelValues(channel, string(result.Transaction.Kind()), string(result.Transaction.Status())).Inc()
 }
 
 func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, error) {
@@ -40,6 +61,7 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 		return WagerResult{}, err
 	}
 
+	started := time.Now()
 	var result WagerResult
 	err := s.store.InTx(ctx, func(r *store.Repos) error {
 		var err error
@@ -49,6 +71,7 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 	if err != nil {
 		return WagerResult{}, err
 	}
+	s.record(cmd.Channel, started, result)
 	return result, nil
 }
 
@@ -68,6 +91,7 @@ func (s *Wagers) ProcessMessage(ctx context.Context, msg InboundMessage, cmd Wag
 		return MessageResult{}, err
 	}
 
+	started := time.Now()
 	var result MessageResult
 	err := s.store.InTx(ctx, func(r *store.Repos) error {
 		inserted, err := r.Inbox.Insert(ctx, msg.Consumer, msg.MessageID, msg.Hash, s.now())
@@ -96,6 +120,7 @@ func (s *Wagers) ProcessMessage(ctx context.Context, msg InboundMessage, cmd Wag
 	if err != nil {
 		return MessageResult{}, err
 	}
+	s.record(cmd.Channel, started, result.WagerResult)
 	return result, nil
 }
 
@@ -235,7 +260,11 @@ func (s *Wagers) save(ctx context.Context, r *store.Repos, tx *domain.WagerTrans
 
 func (s *Wagers) ResumeNextPending(ctx context.Context) (bool, error) {
 	found := false
+	outcome := ""
+	var settled *domain.WagerTransaction
+	started := time.Now()
 	err := s.store.InTx(ctx, func(r *store.Repos) error {
+		outcome, settled = "", nil
 		now := s.now()
 		view, err := r.Transactions.ClaimDuePending(ctx, now)
 		if errors.Is(err, store.ErrNotFound) {
@@ -258,6 +287,7 @@ func (s *Wagers) ResumeNextPending(ctx context.Context) (bool, error) {
 			return err
 		}
 		if ref != nil && ref.Status().IsTerminal() {
+			outcome, settled = "resolved", tx
 			return s.settle(ctx, r, tx, eventCtx)
 		}
 
@@ -267,10 +297,18 @@ func (s *Wagers) ResumeNextPending(ctx context.Context) (bool, error) {
 			if err != nil {
 				return err
 			}
+			outcome, settled = "expired", tx
 			return s.reject(ctx, r, tx, domain.ErrReferenceNotFound.Code, wallet, eventCtx)
 		}
+		outcome = "rescheduled"
 		return r.Transactions.ReschedulePending(ctx, tx.ID(), attempts, now.Add(s.backoff(attempts)))
 	})
+	if err == nil && outcome != "" {
+		s.metrics.PendingReferenceAttempts.WithLabelValues(outcome).Inc()
+		if settled != nil {
+			s.record(ChannelWorker, started, WagerResult{Transaction: settled})
+		}
+	}
 	return found, err
 }
 

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/sqsclient"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 	"github.com/RobertoPSF/backend-challenge-go/internal/worker"
@@ -26,12 +27,14 @@ type Publisher struct {
 	sqs      *sqsclient.Client
 	cfg      config.Outbox
 	instance string
+	metrics  *metrics.Metrics
 	log      *slog.Logger
 	now      func() time.Time
 }
 
-func New(st *store.Store, client *sqsclient.Client, cfg config.Config, log *slog.Logger) *Publisher {
-	return &Publisher{store: st, sqs: client, cfg: cfg.Outbox, instance: cfg.InstanceID, log: log.With("component", "outbox-publisher"), now: time.Now}
+func New(st *store.Store, client *sqsclient.Client, cfg config.Config, m *metrics.Metrics, log *slog.Logger) *Publisher {
+	return &Publisher{store: st, sqs: client, cfg: cfg.Outbox, instance: cfg.InstanceID, metrics: m,
+		log: log.With("component", "outbox-publisher"), now: time.Now}
 }
 
 func register(lc fx.Lifecycle, p *Publisher, cfg config.Config, log *slog.Logger) {
@@ -83,6 +86,7 @@ func (p *Publisher) publish(ctx context.Context, e store.OutboxEvent, owner stri
 		},
 	})
 	if err != nil {
+		p.metrics.OutboxPublish.WithLabelValues("failed").Inc()
 		next := p.now().Add(p.retryDelay(e.Attempts))
 		log.Warn("event publication failed, will retry", "error", err, "nextAttemptAt", next)
 		if err := outbox.MarkFailed(work, e.EventID, owner, next, truncate(err.Error(), 1000)); err != nil {
@@ -90,6 +94,7 @@ func (p *Publisher) publish(ctx context.Context, e store.OutboxEvent, owner stri
 		}
 		return
 	}
+	p.metrics.OutboxPublish.WithLabelValues("published").Inc()
 	if err := outbox.MarkPublished(work, e.EventID, owner, p.now()); err != nil {
 		log.Error("event published but not marked; it will be republished with the same eventId", "error", err)
 		return

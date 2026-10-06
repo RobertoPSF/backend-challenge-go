@@ -671,6 +671,39 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - 404 para carteira inexistente, 403 para provedor.
   - Postman: reconciliação da carteira do roteiro (150.00, 4 lançamentos, consistente).
 
+## D-031 — Observabilidade: métricas, logs e health (etapa 2.9)
+
+- **Métricas centralizadas** em `platform/metrics.Metrics`, um só lugar com todas as séries, injetado via Fx em store, casos de uso, consumidor, publisher, reconciliação e HTTP. O registro é próprio, não o global (D-008).
+- **Cobertura do README (§12):**
+
+  | Sinal exigido | Métrica |
+  | --- | --- |
+  | resultados por status | `wager_transactions_total{channel, kind, status}`, com channel = `http`, `sqs` ou `worker` |
+  | duplicatas | `wager_idempotent_replays_total{channel}`; `sqs_messages_total{result="duplicate"}` (inbox) |
+  | retries | `sqs_messages_total{result="retry"}`; `pending_reference_attempts_total{outcome="rescheduled|resolved|expired"}`; `outbox_publish_total{result="failed"}` |
+  | DLQ | `sqs_messages_total{result="dead_letter"}` e `sqs_dead_letters_total{reason}`, com o código do motivo (cardinalidade baixa) |
+  | conflitos de concorrência | `wallet_concurrency_conflicts_total{reason="version|serialization|deadlock"}` |
+  | atraso da outbox | `outbox_pending_events`, `outbox_oldest_pending_age_seconds` (+ `pending_references_waiting`) |
+  | latência de processamento | `wager_processing_duration_seconds{channel}` (histograma, inclui a transação SQL) e `http_request_duration_seconds{route, method, status}` |
+  | divergências de reconciliação | `reconciliation_mismatches_total` |
+
+- **Atraso da outbox lido do banco na coleta:**
+  - Opções: (a) consulta a cada scrape × (b) gauges atualizados pelo publisher.
+  - Decisão: **(a)**. Um coletor Prometheus executa, a cada `GET /metrics`, um `SELECT` leve (índice parcial de não publicados) com timeout de 2s.
+  - O valor é exato e igual em qualquer instância, inclusive nas que não publicam e **mesmo com o publisher travado**, que é quando o atraso importa. Se a consulta falhar, as séries são omitidas naquela coleta e um WARN é logado.
+- **Instrumentação por canal:** `WagerCommand.Channel` identifica a origem. O `Wagers` registra resultado, replay e latência num único ponto, e o worker de pendências registra as resoluções e expirações como canal `worker`.
+- **Logs** (`slog` JSON, D-008):
+  - **log de acesso** por requisição: `method`, `route` (o padrão da rota, como `/wallets/{walletId}`, nunca IDs, query ou corpo), `status`, `durationMs`, `correlationId`. Health e métricas vão em DEBUG, para não poluir com as sondas;
+  - eventos de negócio já tinham `transactionId`, `walletId`, `providerId`, `messageId` e `correlationId` (D-026, D-028, D-027);
+  - **não são registrados:** tokens, header `Authorization`, corpos de requisição nem payloads financeiros completos (README §12).
+- **Health:** `/health/live` (processo) e `/health/ready` (Postgres + SQS, D-008). No início do shutdown, o readiness passa a responder **503 `draining`** antes de o servidor parar de aceitar conexões, o que tira a instância do balanceamento.
+- **Tracing (OpenTelemetry) e dashboards:** opcionais no README, não implementados por prioridade. Ficam listados como trabalho futuro.
+- **Testes:**
+  - `TestWagerAPI` confere, depois dos fluxos reais, que **todas** as séries exigidas aparecem em `/metrics`, inclusive as do canal `worker`;
+  - `TestSQSConsumer` confere processadas, duplicatas, DLQ por motivo e replays via SQS;
+  - unitário do readiness em modo `draining`;
+  - compose: amostra de `/metrics` e log de acesso verificados depois da collection do Postman.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

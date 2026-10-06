@@ -38,7 +38,7 @@ func (e consumerEnv) publisher(t *testing.T, client *sqsclient.Client) *publishe
 	cfg.InstanceID = "test-" + uuid.NewString()[:8]
 	cfg.Outbox = config.Outbox{Workers: 1, BatchSize: 50, Lease: 2 * time.Second, PollInterval: 50 * time.Millisecond,
 		PublishTimeout: time.Second, RetryBaseDelay: 300 * time.Millisecond, RetryMaxDelay: time.Second}
-	return publisher.New(e.envs[0].store, client, cfg, silentLog)
+	return publisher.New(e.envs[0].store, client, cfg, e.envs[0].metrics, silentLog)
 }
 
 func publishAll(t *testing.T, p *publisher.Publisher) {

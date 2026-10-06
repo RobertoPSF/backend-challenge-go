@@ -323,6 +323,36 @@ func TestWagerAPI(t *testing.T) {
 		}
 	})
 
+	t.Run("metrics expose the observability signals required by the README", func(t *testing.T) {
+		time.Sleep(time.Second)
+		resp, err := http.Get(a.BaseURL + "/metrics")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		body := string(raw)
+
+		for _, series := range []string{
+			`wager_transactions_total{channel="http",kind="BET",status="PROCESSED"}`,
+			`wager_transactions_total{channel="http",kind="BET",status="REJECTED"}`,
+			`wager_transactions_total{channel="worker",kind="REFUND",status="PROCESSED"}`,
+			`wager_idempotent_replays_total{channel="http"}`,
+			`wager_processing_duration_seconds_count{channel="http"}`,
+			`pending_reference_attempts_total{outcome="resolved"}`,
+			`outbox_publish_total{result="published"}`,
+			`outbox_pending_events `,
+			`outbox_oldest_pending_age_seconds `,
+			`pending_references_waiting `,
+			`reconciliation_mismatches_total `,
+			`http_request_duration_seconds_count{method="POST",route="/wagering/transactions",status="201"}`,
+		} {
+			if !strings.Contains(body, series) {
+				t.Errorf("missing metric series %s", series)
+			}
+		}
+	})
+
 	t.Run("the same BET 50 times over HTTP", func(t *testing.T) {
 		w := openAPIWallet(t, a, admin, "100.00")
 		id := ext()

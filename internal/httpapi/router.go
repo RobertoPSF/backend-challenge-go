@@ -11,11 +11,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 )
 
-func NewRouter(reg *prometheus.Registry, health *Health, verifier *auth.Verifier, wallets *WalletHandlers, wagers *WagerHandlers, log *slog.Logger) http.Handler {
+func NewRouter(reg *prometheus.Registry, m *metrics.Metrics, health *Health, verifier *auth.Verifier, wallets *WalletHandlers, wagers *WagerHandlers, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer, CorrelationID)
+	r.Use(CorrelationID, Observe(m, log), middleware.Recoverer)
 
 	r.Get("/health/live", health.Live)
 	r.Get("/health/ready", health.Ready)

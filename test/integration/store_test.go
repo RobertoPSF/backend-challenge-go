@@ -19,6 +19,7 @@ import (
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/postgres"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 	"github.com/RobertoPSF/backend-challenge-go/test/testinfra"
@@ -27,9 +28,10 @@ import (
 var silentLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 type storeEnv struct {
-	store *store.Store
-	pool  *pgxpool.Pool
-	reg   *prometheus.Registry
+	store   *store.Store
+	pool    *pgxpool.Pool
+	reg     *prometheus.Registry
+	metrics *metrics.Metrics
 }
 
 func newStoreEnv(t *testing.T, lockTimeout time.Duration) storeEnv {
@@ -51,7 +53,8 @@ func newStoreOn(t *testing.T, databaseURL string, lockTimeout time.Duration) sto
 	t.Cleanup(lc.RequireStop)
 
 	reg := prometheus.NewRegistry()
-	return storeEnv{store: store.New(pool, reg, silentLog), pool: pool, reg: reg}
+	m := metrics.New(reg)
+	return storeEnv{store: store.New(pool, m, silentLog), pool: pool, reg: reg, metrics: m}
 }
 
 func brl(t *testing.T, amount string) domain.Money {

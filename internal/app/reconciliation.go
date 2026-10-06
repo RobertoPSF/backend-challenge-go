@@ -5,9 +5,9 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 )
 
@@ -21,18 +21,13 @@ type Reconciliation struct {
 }
 
 type Reconciler struct {
-	store      *store.Store
-	log        *slog.Logger
-	mismatches prometheus.Counter
+	store   *store.Store
+	log     *slog.Logger
+	metrics *metrics.Metrics
 }
 
-func NewReconciler(st *store.Store, reg prometheus.Registerer, log *slog.Logger) *Reconciler {
-	mismatches := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "reconciliation_mismatches_total",
-		Help: "Reconciliations whose stored balance differs from the balance rebuilt from the ledger.",
-	})
-	reg.MustRegister(mismatches)
-	return &Reconciler{store: st, log: log, mismatches: mismatches}
+func NewReconciler(st *store.Store, m *metrics.Metrics, log *slog.Logger) *Reconciler {
+	return &Reconciler{store: st, log: log, metrics: m}
 }
 
 func (s *Reconciler) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconciliation, error) {
@@ -69,7 +64,7 @@ func (s *Reconciler) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconci
 	}
 
 	if !result.Consistent {
-		s.mismatches.Inc()
+		s.metrics.ReconciliationMismatches.Inc()
 		s.log.WarnContext(ctx, "reconciliation mismatch", "walletId", walletID,
 			"storedBalance", result.StoredBalance.String(), "calculatedBalance", result.CalculatedBalance.String(),
 			"difference", result.Difference.String(), "checkedEntries", result.CheckedEntries)

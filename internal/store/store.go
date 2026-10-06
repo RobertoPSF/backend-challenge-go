@@ -14,9 +14,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
+
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 )
 
-var Module = fx.Module("store", fx.Provide(New))
+var Module = fx.Module("store", fx.Provide(New), fx.Invoke(registerBacklogCollector))
+
+func registerBacklogCollector(reg prometheus.Registerer, st *Store, log *slog.Logger) {
+	reg.MustRegister(metrics.NewBacklogCollector(st.Backlog, log))
+}
 
 const maxTxAttempts = 3
 
@@ -51,18 +57,13 @@ func newRepos(q querier) *Repos {
 }
 
 type Store struct {
-	pool      *pgxpool.Pool
-	log       *slog.Logger
-	conflicts *prometheus.CounterVec
+	pool    *pgxpool.Pool
+	log     *slog.Logger
+	metrics *metrics.Metrics
 }
 
-func New(pool *pgxpool.Pool, reg prometheus.Registerer, log *slog.Logger) *Store {
-	conflicts := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "wallet_concurrency_conflicts_total",
-		Help: "Transactions retried because of a concurrency conflict, by reason.",
-	}, []string{"reason"})
-	reg.MustRegister(conflicts)
-	return &Store{pool: pool, log: log, conflicts: conflicts}
+func New(pool *pgxpool.Pool, m *metrics.Metrics, log *slog.Logger) *Store {
+	return &Store{pool: pool, log: log, metrics: m}
 }
 
 func (s *Store) Read() *Repos {
@@ -81,7 +82,7 @@ func (s *Store) InTx(ctx context.Context, fn func(r *Repos) error) error {
 		if !retryable {
 			return Classify(ctx, err)
 		}
-		s.conflicts.WithLabelValues(reason).Inc()
+		s.metrics.ConcurrencyConflicts.WithLabelValues(reason).Inc()
 		s.log.WarnContext(ctx, "transaction conflict, retrying", "reason", reason, "attempt", attempt)
 		if attempt < maxTxAttempts {
 			if sleepErr := backoff(ctx, attempt); sleepErr != nil {
@@ -90,6 +91,18 @@ func (s *Store) InTx(ctx context.Context, fn func(r *Repos) error) error {
 		}
 	}
 	return fmt.Errorf("%w: %w", ErrConcurrentUpdate, err)
+}
+
+func (s *Store) Backlog(ctx context.Context) (metrics.Backlog, error) {
+	var b metrics.Backlog
+	var oldestAgeSeconds float64
+	err := s.pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM outbox_events WHERE published_at IS NULL),
+		(SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(occurred_at)), 0)::float8 FROM outbox_events WHERE published_at IS NULL),
+		(SELECT count(*) FROM wager_transactions WHERE status = 'PENDING_REFERENCE')`).
+		Scan(&b.PendingEvents, &oldestAgeSeconds, &b.WaitingForReferences)
+	b.OldestPendingAge = time.Duration(max(oldestAgeSeconds, 0) * float64(time.Second))
+	return b, err
 }
 
 func (s *Store) ReadSnapshot(ctx context.Context, fn func(r *Repos) error) error {

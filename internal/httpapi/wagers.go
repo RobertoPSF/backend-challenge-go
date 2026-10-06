@@ -79,7 +79,7 @@ func (h *WagerHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.wagers.Process(r.Context(), app.WagerCommand{Request: req, CorrelationID: correlationFrom(r.Context())})
+	result, err := h.wagers.Process(r.Context(), app.WagerCommand{Request: req, CorrelationID: correlationFrom(r.Context()), Channel: app.ChannelHTTP})
 	if err != nil {
 		writeAppError(w, r, h.log, err)
 		return

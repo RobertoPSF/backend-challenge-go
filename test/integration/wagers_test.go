@@ -43,7 +43,7 @@ func newWagerEnvWith(t *testing.T, instances int, cfg config.Config) wagerEnv {
 	for range instances {
 		se := newStoreOn(t, pg.AppURL, 5*time.Second)
 		env.envs = append(env.envs, se)
-		env.instances = append(env.instances, app.NewWagers(se.store, cfg))
+		env.instances = append(env.instances, app.NewWagers(se.store, cfg, se.metrics))
 	}
 	env.wallets = app.NewWallets(env.envs[0].store)
 	return env

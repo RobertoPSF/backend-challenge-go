@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -16,9 +17,10 @@ import (
 const readinessCheckTimeout = 2 * time.Second
 
 type Health struct {
-	pool *pgxpool.Pool
-	sqs  *sqsclient.Client
-	log  *slog.Logger
+	pool     *pgxpool.Pool
+	sqs      *sqsclient.Client
+	log      *slog.Logger
+	draining atomic.Bool
 }
 
 func NewHealth(pool *pgxpool.Pool, sqsClient *sqsclient.Client, log *slog.Logger) *Health {
@@ -30,6 +32,10 @@ func (h *Health) Live(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Health) Ready(w http.ResponseWriter, r *http.Request) {
+	if h.draining.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "draining"})
+		return
+	}
 	checks := map[string]func(context.Context) error{
 		"postgres": h.pool.Ping,
 		"sqs": func(ctx context.Context) error {

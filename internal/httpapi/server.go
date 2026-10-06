@@ -19,7 +19,7 @@ var Module = fx.Module("http",
 	fx.Invoke(func(*http.Server) {}),
 )
 
-func NewServer(lc fx.Lifecycle, shutdowner fx.Shutdowner, cfg config.Config, handler http.Handler, log *slog.Logger) *http.Server {
+func NewServer(lc fx.Lifecycle, shutdowner fx.Shutdowner, cfg config.Config, handler http.Handler, health *Health, log *slog.Logger) *http.Server {
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
@@ -42,6 +42,7 @@ func NewServer(lc fx.Lifecycle, shutdowner fx.Shutdowner, cfg config.Config, han
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			health.draining.Store(true)
 			err := srv.Shutdown(ctx)
 			log.Info("http server stopped", "error", err)
 			return err
