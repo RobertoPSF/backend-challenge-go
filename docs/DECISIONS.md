@@ -478,6 +478,48 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - integração (`TestProcessWager_References`): REFUND, reversão única, ROLLBACK de REFUND, `REVERSAL_INSUFFICIENT_FUNDS`, validações, WIN com referência, espera (REFUND, ROLLBACK e WIN) com agendamento e evento, replay de pendente, isolamento entre provedores;
   - **concorrência:** REFUND + ROLLBACK + REFUND da mesma BET em paralelo, por 3 instâncias, repetido 10× → sempre **exatamente uma** reversão bem-sucedida e o saldo correto. O bloco rodou 5× seguidas com `-race`.
 
+## D-026 — Endpoints de transação e contrato HTTP (etapa 2.4)
+
+- **Rotas:**
+
+  | Rota | Quem | Regra |
+  | --- | --- | --- |
+  | `POST /wagering/transactions` | role `provider` | `Idempotency-Key` obrigatório; `providerId` do corpo = `provider_id` do token, senão **403 antes de qualquer leitura ou escrita** |
+  | `GET /wagering/transactions/{transactionId}` | `provider` ou `wallet-admin` | o provedor só vê as próprias; as de outro provedor (e as internas, `OPENING`) respondem **404**, sem revelar a existência |
+  | `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | `provider` ou `wallet-admin` | o provedor só consulta o próprio `providerId` (403 para outro); o serviço interno consulta qualquer um |
+
+  - **Serviço interno na rota do provedor:** opções (a) permitir leitura × (b) só provedores. Decisão: **(a)**, coerente com a consulta por ID interno e útil para suporte e auditoria. O serviço interno **não** envia operações (403).
+  - `RequireRole` passou a aceitar uma lista de roles ("qualquer uma"). Um principal só com `provider` precisa de `provider_id` não vazio.
+- **Entrada:**
+  - o corpo é decodificado diretamente em `domain.WagerRequestInput`, o mesmo tipo do SQS (D-023), com `DisallowUnknownFields`;
+  - a chave **só** pode vir no header: um `idempotencyKey` no corpo é campo desconhecido → 400;
+  - o servidor nunca substitui a chave recebida.
+- **Respostas** (README §9: "situações distinguíveis pelo contrato"):
+
+  | Situação | HTTP | Corpo |
+  | --- | --- | --- |
+  | Processada (nova) | **201** | `{transactionId, status: PROCESSED, balance, idempotentReplay: false}` |
+  | Processada (replay) | **200** | igual, com o `balance` **original** e `idempotentReplay: true` |
+  | Rejeição de negócio (nova ou replay) | **422** | `{transactionId, status: REJECTED, failureCode, balance (observado), idempotentReplay}` |
+  | Aguardando referência | **202** + `Location: /wagering/transactions/{id}` | `{transactionId, status: PENDING_REFERENCE, idempotentReplay}` |
+  | Entrada inválida | 400 | `{error: {code}}`: `MISSING_IDEMPOTENCY_KEY`, `INVALID_REQUEST`, `INVALID_MONEY`, `INVALID_AMOUNT`, `INVALID_CURRENCY`, `UNSUPPORTED_KIND` |
+  | Carteira inexistente (D-002) | 422 | `{error: {code: WALLET_NOT_FOUND}}`, sem `status` (o que distingue de uma rejeição persistida) |
+  | Sem token / token inválido | 401 | `UNAUTHENTICATED` |
+  | Sem permissão / `providerId` de outro | 403 | `FORBIDDEN` |
+  | Não encontrada | 404 | `NOT_FOUND` |
+  | Mesma chave com outro payload / mesmo ID externo com outra chave | 409 | `IDEMPOTENCY_KEY_CONFLICT` / `EXTERNAL_TRANSACTION_CONFLICT` |
+  | Indisponibilidade transitória | 503 + `Retry-After` | `TEMPORARILY_UNAVAILABLE` |
+
+  `FAILED` (falha permanente de infraestrutura) responde 500 com o corpo da transação. Nenhum fluxo produz esse estado ainda.
+- **Consulta:** `GET` devolve a visão completa: IDs, provedor, rodada, jogo, tipo, valor, status, `failureCode`, saldo, referências, `attempts`, `createdAt`/`updatedAt`/`processedAt` e, enquanto não terminal, `nextAttemptAt`/`expiresAt`, para acompanhar pendências (README §9). A visão vem de `store.TransactionView`, que acrescenta as colunas de agendamento à transação de domínio.
+- **Log:** cada operação gera um `INFO "wager transaction handled"` com `transactionId`, `walletId`, `providerId`, `kind`, `status`, `failureCode`, `idempotentReplay` e `correlationId`, sem payload financeiro completo (README §12).
+- **Testes** (`TestWagerAPI`, aplicação completa e tokens reais, 10 cenários):
+  - 201, depois 200 com o saldo original após outra movimentação; 422 com saldo observado (também no replay); LOSS; 202 e consulta da pendência pelo `Location`; REFUND e `ALREADY_REVERSED`; os dois 409;
+  - 9 entradas inválidas, sem nenhuma transação persistida;
+  - autorização: 401; 403 para o serviço interno enviando, para provider-b se passando por provider-a e para provider-b reenviando o pedido do provider-a; 404/403 nas consultas cruzadas; provider-a e serviço interno leem; **as requisições negadas não persistem nada e não mudam o saldo**;
+  - **80 + 80 sobre 100 via HTTP** (um 201, um 422, saldo 20.00) e **50 envios idênticos via HTTP** (um 201 e 49 × 200, saldo 90.00).
+- **Postman:** pasta `05 - Operações de aposta` (23 requisições); a collection passou a ter 70 requisições e 193 asserções, todas passando no newman.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -532,3 +574,6 @@ Depois que a suíte de integração passou (190s), o Docker Desktop deixou de re
 - **Correção:** `SELECT ... FOR NO KEY UPDATE`, o mesmo lock que o Postgres usa num `UPDATE` que não altera colunas de chave. Ele continua exclusivo entre escritores da mesma carteira (serializa as operações), mas é **compatível com `FOR KEY SHARE`**, então os inserts com FK não entram no ciclo.
 - **Resultado:** o mesmo teste passa sem nenhum deadlock (verificado pela métrica `wallet_concurrency_conflicts_total{reason="deadlock"} = 0`), e o bloco de concorrência caiu de 57s para cerca de 3s.
 - **Alternativa considerada:** travar a carteira **antes** de inserir a transação. Também evita o ciclo, mas faria até os replays esperarem pelo lock da carteira.
+
+### P-015 — Falso positivo de "transação persistida" no teste da API (etapa 2.4, só no teste)
+Os casos de entrada inválida e de autorização contavam **todas** as transações da carteira e acharam 1 a mais. Inspecionando as linhas, era a `OPENING` da abertura, que existe por design. A contagem passou a filtrar `origin = 'EXTERNAL'`. Nenhuma alteração no código da aplicação.

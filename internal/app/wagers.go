@@ -197,6 +197,18 @@ func (s *Wagers) replay(ctx context.Context, r *store.Repos, req domain.WagerReq
 	return WagerResult{Transaction: existing, Replay: true}, nil
 }
 
+type TransactionView = store.TransactionView
+
+func (s *Wagers) Get(ctx context.Context, id uuid.UUID) (TransactionView, error) {
+	v, err := s.store.Read().Transactions.GetView(ctx, id)
+	return v, translate(ctx, err)
+}
+
+func (s *Wagers) GetByExternalID(ctx context.Context, providerID, externalID string) (TransactionView, error) {
+	v, err := s.store.Read().Transactions.FindViewByExternalID(ctx, providerID, externalID)
+	return v, translate(ctx, err)
+}
+
 func isBusinessRejection(err error) bool {
 	var de *domain.DomainError
 	return errors.As(err, &de) && de.Kind == domain.KindBusiness

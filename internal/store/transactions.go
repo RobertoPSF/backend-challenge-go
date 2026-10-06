@@ -92,6 +92,34 @@ func (r TransactionRepo) HasSuccessfulReversal(ctx context.Context, referenceID 
 	return exists, err
 }
 
+type TransactionView struct {
+	Transaction   *domain.WagerTransaction
+	Attempts      int
+	NextAttemptAt *time.Time
+	ExpiresAt     *time.Time
+}
+
+const viewColumns = transactionColumns + `, attempts, next_attempt_at, expires_at`
+
+func (r TransactionRepo) GetView(ctx context.Context, id uuid.UUID) (TransactionView, error) {
+	return scanView(r.q.QueryRow(ctx, `SELECT `+viewColumns+` FROM wager_transactions WHERE id = $1`, id))
+}
+
+func (r TransactionRepo) FindViewByExternalID(ctx context.Context, providerID, externalID string) (TransactionView, error) {
+	return scanView(r.q.QueryRow(ctx, `SELECT `+viewColumns+` FROM wager_transactions
+		WHERE origin = 'EXTERNAL' AND provider_id = $1 AND external_transaction_id = $2`, providerID, externalID))
+}
+
+func scanView(row pgx.Row) (TransactionView, error) {
+	var v TransactionView
+	tx, err := scanTransaction(row, &v.Attempts, &v.NextAttemptAt, &v.ExpiresAt)
+	if err != nil {
+		return TransactionView{}, err
+	}
+	v.Transaction = tx
+	return v, nil
+}
+
 func (r TransactionRepo) FindByIdempotencyKey(ctx context.Context, providerID, key string) (*domain.WagerTransaction, error) {
 	return scanTransaction(r.q.QueryRow(ctx, `SELECT `+transactionColumns+` FROM wager_transactions
 		WHERE origin = 'EXTERNAL' AND provider_id = $1 AND idempotency_key = $2`, providerID, key))
@@ -114,7 +142,7 @@ func balanceColumns(balance *domain.Money) (*int64, *string) {
 	return &minor, &currency
 }
 
-func scanTransaction(row pgx.Row) (*domain.WagerTransaction, error) {
+func scanTransaction(row pgx.Row, extra ...any) (*domain.WagerTransaction, error) {
 	var (
 		s                                             domain.WagerTransactionSnapshot
 		currency                                      string
@@ -125,10 +153,11 @@ func scanTransaction(row pgx.Row) (*domain.WagerTransaction, error) {
 		balanceCurrency                               *string
 		processedAt                                   *time.Time
 	)
-	err := row.Scan(&s.ID, &s.Kind, &s.Status, &s.WalletID, &s.PlayerID, &currency, &amount,
+	dest := []any{&s.ID, &s.Kind, &s.Status, &s.WalletID, &s.PlayerID, &currency, &amount,
 		&providerID, &externalID, &idempotencyKey, &hash, &roundID, &gameID,
 		&referenceExternalID, &s.ReferenceTransactionID, &failure,
-		&balanceAfter, &balanceCurrency, &s.CreatedAt, &s.UpdatedAt, &processedAt)
+		&balanceAfter, &balanceCurrency, &s.CreatedAt, &s.UpdatedAt, &processedAt}
+	err := row.Scan(append(dest, extra...)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound

@@ -31,6 +31,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 func writeAppError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	var domainErr *domain.DomainError
 	switch {
+	case errors.Is(err, domain.ErrWalletNotFound):
+		writeError(w, http.StatusUnprocessableEntity, string(domain.ErrWalletNotFound.Code), domain.ErrWalletNotFound.Message)
 	case errors.As(err, &domainErr) && domainErr.Kind == domain.KindValidation:
 		writeError(w, http.StatusBadRequest, string(domainErr.Code), err.Error())
 	case errors.As(err, &domainErr) && domainErr.Kind == domain.KindConflict:

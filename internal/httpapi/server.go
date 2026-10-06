@@ -15,7 +15,7 @@ import (
 )
 
 var Module = fx.Module("http",
-	fx.Provide(NewHealth, NewWalletHandlers, NewRouter, NewServer),
+	fx.Provide(NewHealth, NewWalletHandlers, NewWagerHandlers, NewRouter, NewServer),
 	fx.Invoke(func(*http.Server) {}),
 )
 

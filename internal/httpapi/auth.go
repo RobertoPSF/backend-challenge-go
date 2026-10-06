@@ -3,6 +3,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
@@ -28,21 +29,26 @@ func Authenticate(verifier *auth.Verifier, log *slog.Logger) func(http.Handler) 
 	}
 }
 
-func RequireRole(role string) func(http.Handler) http.Handler {
+func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			principal, ok := auth.PrincipalFrom(r.Context())
-			if !ok || !principal.HasRole(role) {
-				writeError(w, http.StatusForbidden, "FORBIDDEN", "missing required role "+role)
+			allowed := ok && slices.ContainsFunc(roles, principal.HasRole)
+			if !allowed {
+				writeError(w, http.StatusForbidden, "FORBIDDEN", "missing required role "+strings.Join(roles, " or "))
 				return
 			}
-			if role == auth.RoleProvider && principal.ProviderID == "" {
+			if isProviderOnly(principal) && principal.ProviderID == "" {
 				writeError(w, http.StatusForbidden, "FORBIDDEN", "provider identity not bound to this credential")
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func isProviderOnly(p auth.Principal) bool {
+	return p.HasRole(auth.RoleProvider) && !p.HasRole(auth.RoleWalletAdmin)
 }
 
 func unauthenticated(w http.ResponseWriter, message string) {

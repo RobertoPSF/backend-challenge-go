@@ -13,7 +13,7 @@ import (
 	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
 )
 
-func NewRouter(reg *prometheus.Registry, health *Health, verifier *auth.Verifier, wallets *WalletHandlers, log *slog.Logger) http.Handler {
+func NewRouter(reg *prometheus.Registry, health *Health, verifier *auth.Verifier, wallets *WalletHandlers, wagers *WagerHandlers, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer, CorrelationID)
 
@@ -29,6 +29,14 @@ func NewRouter(reg *prometheus.Registry, health *Health, verifier *auth.Verifier
 			r.Post("/wallets", wallets.Open)
 			r.Get("/wallets/{walletId}", wallets.Get)
 			r.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+		})
+
+		r.With(RequireRole(auth.RoleProvider)).Post("/wagering/transactions", wagers.Submit)
+
+		r.Group(func(r chi.Router) {
+			r.Use(RequireRole(auth.RoleProvider, auth.RoleWalletAdmin))
+			r.Get("/wagering/transactions/{transactionId}", wagers.Get)
+			r.Get("/providers/{providerId}/wagering/transactions/{externalTransactionId}", wagers.GetByExternalID)
 		})
 	})
 
