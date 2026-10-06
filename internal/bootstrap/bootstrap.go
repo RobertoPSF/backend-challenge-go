@@ -7,6 +7,7 @@ import (
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/app"
 	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
+	"github.com/RobertoPSF/backend-challenge-go/internal/consumer"
 	"github.com/RobertoPSF/backend-challenge-go/internal/httpapi"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/logger"
@@ -38,5 +39,6 @@ func Options() fx.Option {
 		app.Module,
 		httpapi.Module,
 		worker.Module,
+		consumer.Module,
 	)
 }

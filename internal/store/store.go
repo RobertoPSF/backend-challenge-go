@@ -37,6 +37,7 @@ type Repos struct {
 	Transactions TransactionRepo
 	Ledger       LedgerRepo
 	Outbox       OutboxRepo
+	Inbox        InboxRepo
 }
 
 func newRepos(q querier) *Repos {
@@ -45,6 +46,7 @@ func newRepos(q querier) *Repos {
 		Transactions: TransactionRepo{q: q},
 		Ledger:       LedgerRepo{q: q},
 		Outbox:       OutboxRepo{q: q},
+		Inbox:        InboxRepo{q: q},
 	}
 }
 

@@ -22,8 +22,9 @@ type Client struct {
 }
 
 type Queues struct {
-	InputURL  string
-	EventsURL string
+	InputURL    string
+	InputDLQURL string
+	EventsURL   string
 }
 
 func New(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*Client, error) {
@@ -49,6 +50,9 @@ func New(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*Client, error) 
 				return err
 			}
 			if client.Queues.EventsURL, err = client.queueURL(ctx, cfg.AWS.EventsQueue); err != nil {
+				return err
+			}
+			if client.Queues.InputDLQURL, err = client.queueURL(ctx, cfg.AWS.InputDLQ); err != nil {
 				return err
 			}
 			log.Info("sqs queues resolved", "input", cfg.AWS.InputQueue, "events", cfg.AWS.EventsQueue)

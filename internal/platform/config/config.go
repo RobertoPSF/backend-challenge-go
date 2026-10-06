@@ -22,6 +22,19 @@ type Config struct {
 	AWS        AWS
 	OIDC       OIDC
 	Pending    Pending
+	Consumer   Consumer
+}
+
+type Consumer struct {
+	Enabled           bool          `env:"ENABLE_CONSUMER" envDefault:"true"`
+	Name              string        `env:"SQS_CONSUMER_NAME" envDefault:"wallet-service"`
+	Workers           int           `env:"SQS_WORKERS" envDefault:"2"`
+	WaitTime          time.Duration `env:"SQS_WAIT_TIME" envDefault:"20s"`
+	VisibilityTimeout time.Duration `env:"SQS_VISIBILITY_TIMEOUT" envDefault:"30s"`
+	HandlerTimeout    time.Duration `env:"SQS_HANDLER_TIMEOUT" envDefault:"20s"`
+	RetryBaseDelay    time.Duration `env:"SQS_RETRY_BASE_DELAY" envDefault:"2s"`
+	RetryMaxDelay     time.Duration `env:"SQS_RETRY_MAX_DELAY" envDefault:"5m"`
+	KnownProviders    []string      `env:"KNOWN_PROVIDERS" envDefault:"provider-a,provider-b" envSeparator:","`
 }
 
 type Pending struct {
@@ -52,6 +65,7 @@ type AWS struct {
 	EndpointURL string `env:"AWS_ENDPOINT_URL"`
 	InputQueue  string `env:"SQS_INPUT_QUEUE" envDefault:"wager-transactions.fifo"`
 	EventsQueue string `env:"SQS_EVENTS_QUEUE" envDefault:"wallet-events.fifo"`
+	InputDLQ    string `env:"SQS_INPUT_DLQ" envDefault:"wager-transactions-dlq.fifo"`
 }
 
 func Load() (Config, error) {
@@ -83,7 +97,13 @@ func (c Config) Validate() error {
 		c.Pending.TTL <= 0 || c.Pending.Workers < 1 || c.Pending.PollInterval <= 0 {
 		errs = append(errs, errors.New("PENDING_* settings must be positive and PENDING_MAX_BACKOFF >= PENDING_BASE_BACKOFF"))
 	}
-	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.AWS.InputQueue, "SQS_EVENTS_QUEUE": c.AWS.EventsQueue} {
+	if cs := c.Consumer; cs.Workers < 1 || cs.WaitTime < 0 || cs.WaitTime > 20*time.Second || cs.HandlerTimeout <= 0 ||
+		cs.HandlerTimeout >= cs.VisibilityTimeout || cs.RetryBaseDelay <= 0 || cs.RetryMaxDelay < cs.RetryBaseDelay ||
+		cs.RetryMaxDelay > 12*time.Hour || cs.Name == "" || len(cs.KnownProviders) == 0 {
+		errs = append(errs, errors.New("SQS consumer settings invalid: SQS_WAIT_TIME <= 20s, SQS_HANDLER_TIMEOUT < SQS_VISIBILITY_TIMEOUT, "+
+			"0 < SQS_RETRY_BASE_DELAY <= SQS_RETRY_MAX_DELAY <= 12h, SQS_WORKERS >= 1, KNOWN_PROVIDERS not empty"))
+	}
+	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.AWS.InputQueue, "SQS_EVENTS_QUEUE": c.AWS.EventsQueue, "SQS_INPUT_DLQ": c.AWS.InputDLQ} {
 		if !strings.HasSuffix(queue, ".fifo") {
 			errs = append(errs, fmt.Errorf("%s must be a FIFO queue (.fifo): %q", name, queue))
 		}

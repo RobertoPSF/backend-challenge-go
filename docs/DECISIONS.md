@@ -556,6 +556,61 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - ponta a ponta (`TestWagerAPI`): com o worker real dentro da aplicação, um REFUND enviado antes da BET vira `PROCESSED` em cerca de 0,5s depois que a BET chega;
   - `TestFxApp` com `goleak`: o worker para sem vazar goroutines.
 
+## D-028 — Consumidor SQS com inbox (etapa 2.6)
+
+- **Mesmo caso de uso do HTTP (README §10):**
+  - o `data` da mensagem é decodificado no mesmo `domain.WagerRequestInput`, que passa por `ParseWagerRequest` (D-023), com a chave vinda de `data.idempotencyKey`;
+  - `Wagers.ProcessMessage` executa **o mesmo** fluxo de `Process` (inserção idempotente → replay/conflito → `settle`), com a inbox somada **na mesma transação SQL**: inbox, transação, ledger, saldo e outbox são confirmados juntos (README §6.5).
+  - Uma pendência de referência conclui a mensagem depois que a pendência está persistida; o worker (D-027) assume a continuidade.
+- **Inbox:**
+  - `INSERT (consumer_name, message_id, payload_hash) ON CONFLICT DO NOTHING`;
+  - se já existe com o mesmo hash → **duplicata**: a mensagem é apagada sem nenhum efeito;
+  - se já existe com hash diferente → `MESSAGE_ID_CONFLICT` (DLQ);
+  - ao concluir, grava `transaction_id` e `completed_at`.
+  - O hash da inbox é `sha256(payloadHash + ":" + idempotencyKey)`: compara o conteúdo de negócio e a chave, e não os bytes do corpo. Um reenvio com a mesma informação e formatação diferente continua sendo a mesma mensagem.
+- **Envelope:** JSON estrito (campos desconhecidos recusados), um único objeto, `messageId`, `type = WagerTransactionRequested`, `occurredAt` e `data` obrigatórios.
+  - `correlationId` e `causationId` dos eventos = `messageId`.
+  - `providerId` precisa estar em `KNOWN_PROVIDERS` (D-021: sem token no SQS, a validação de domínio continua no consumidor).
+- **Classificação do resultado:**
+
+  | Resultado | Ação |
+  | --- | --- |
+  | `PROCESSED`, `REJECTED` (negócio), `PENDING_REFERENCE`, replay ou duplicata | **`DeleteMessage` depois do commit** |
+  | Envelope inválido (`INVALID_MESSAGE`), provedor desconhecido (`UNKNOWN_PROVIDER`), erros de validação (`INVALID_MONEY`, `UNSUPPORTED_KIND`, `WALLET_NOT_FOUND`, ...) e conflitos (`IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `MESSAGE_ID_CONFLICT`) | **direto para a DLQ** e `DeleteMessage` |
+  | Transitório (`ErrUnavailable`, conflito de concorrência esgotado, timeout) ou erro inesperado | sem apagar: `ChangeMessageVisibility(min(base × 2^(receiveCount−1), máximo))`; depois de `maxReceiveCount = 5`, o **redrive** do SQS move para a DLQ |
+
+- **Erro permanente direto para a DLQ:**
+  - Opções: (a) direto, com motivo × (b) pelo redrive.
+  - Decisão: **(a)**. A mensagem vai para a DLQ na hora, com os atributos `failureReason` e `sourceMessageId` e o corpo original, e **não segura o grupo FIFO da carteira** com 5 reprocessamentos inúteis.
+  - `MessageDeduplicationId` na DLQ = o ID SQS original.
+  - Publicar na DLQ e apagar não são atômicos: uma queda entre os dois pode duplicar a mensagem na DLQ, o que é inofensivo. Se a publicação falhar, a mensagem não é apagada e volta a ser recebida.
+  - **Falhas transitórias continuam indo pelo redrive**, porque podem se resolver sozinhas.
+- **Limites e prazos** (configuráveis e validados no boot):
+  - `SQS_WAIT_TIME` 20s (long polling, máximo do SQS);
+  - `SQS_VISIBILITY_TIMEOUT` 30s;
+  - `SQS_HANDLER_TIMEOUT` 20s, que precisa ser menor que a visibilidade para não processar uma mensagem que já ficou visível para outro consumidor;
+  - backoff de retry com base de 2s e máximo de 5m;
+  - `maxReceiveCount` 5 (redrive da fila, `SQS_MAX_RECEIVE_COUNT`);
+  - `SQS_WORKERS` 2 goroutines por instância, cada uma recebendo até 10 mensagens;
+  - `ENABLE_CONSUMER` permite desligar o consumidor.
+- **Ordem e paralelismo:** as mensagens de um lote são processadas **em sequência** pela goroutine que as recebeu, o que preserva a ordem FIFO de um grupo.
+  - Contrato para os produtores: `MessageGroupId = walletId` (ordem por carteira, carteiras em paralelo) e `MessageDeduplicationId = messageId` (deduplicação do SQS por 5 minutos, **só uma otimização**: a garantia vem da inbox e dos índices únicos).
+- **Shutdown (README §10):** o contexto do `RunOnce` é cancelado, o que **interrompe o long polling na hora**. A mensagem em andamento termina com `context.WithoutCancel` + `SQS_HANDLER_TIMEOUT` (D-007), e as mensagens do lote ainda não iniciadas são **liberadas** com `ChangeMessageVisibility(0)`, para reentrega imediata.
+  - Verificado no compose: `docker compose stop` levou 0,47s, e a ordem foi consumidor → worker de pendências → HTTP → pool.
+- **Testes:**
+  - unitários: envelope do README válido e 8 envelopes inválidos; classificação dos erros; backoff de retry;
+  - integração (`TestSQSConsumer`, LocalStack e Postgres reais):
+    - mensagem processada com inbox concluída e `correlationId = messageId`, e fila vazia;
+    - **a mesma mensagem entregue 2×** (deduplicação do SQS contornada de propósito, para exercitar a inbox) → um único débito;
+    - `messageId` com outro conteúdo → DLQ `MESSAGE_ID_CONFLICT`;
+    - 6 tipos de mensagem inválida → DLQ com o motivo e o corpo original, nada persistido;
+    - rejeição de negócio e pendência → apagadas, sem DLQ;
+    - **a mesma operação por HTTP e por SQS** → um único efeito, e a mensagem vira replay e é apagada;
+    - falha transitória (banco inacessível) → a mensagem fica e é processada depois de o banco "voltar" (outro consumidor);
+    - transitório persistente → depois de 5 recebimentos, o **redrive** leva a mensagem para a DLQ, sem efeito financeiro;
+  - compose: uma mensagem enviada com `awslocal` para a fila foi processada pela aplicação rodando (saldo 100.00 → 75.00).
+- **Pendente para o Dia 3:** teste automatizado da liberação de mensagens no shutdown e de "processo morto entre o commit e o `DeleteMessage`" (cenário 5 do README §13), com injeção de falhas.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

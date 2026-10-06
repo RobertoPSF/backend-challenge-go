@@ -36,6 +36,7 @@ var (
 	ErrWalletAlreadyExists         = newError(KindConflict, "WALLET_ALREADY_EXISTS", "player already has a wallet in this currency")
 	ErrIdempotencyKeyConflict      = newError(KindConflict, "IDEMPOTENCY_KEY_CONFLICT", "idempotency key already used with a different payload")
 	ErrExternalTransactionConflict = newError(KindConflict, "EXTERNAL_TRANSACTION_CONFLICT", "external transaction already registered with another idempotency key")
+	ErrMessageIDConflict           = newError(KindConflict, "MESSAGE_ID_CONFLICT", "message id already consumed with a different payload")
 
 	ErrCurrencyMismatch     = newError(KindBusiness, "CURRENCY_MISMATCH", "currencies do not match")
 	ErrInsufficientFunds    = newError(KindBusiness, "INSUFFICIENT_FUNDS", "insufficient funds")

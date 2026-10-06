@@ -42,25 +42,79 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 
 	var result WagerResult
 	err := s.store.InTx(ctx, func(r *store.Repos) error {
-		tx, err := s.newTransaction(cmd.Request)
-		if err != nil {
-			return err
-		}
-		inserted, err := r.Transactions.InsertIfAbsent(ctx, tx, cmd.CorrelationID)
-		if err != nil {
-			return err
-		}
-		if !inserted {
-			result, err = s.replay(ctx, r, cmd.Request)
-			return err
-		}
-		result = WagerResult{Transaction: tx}
-		return s.settle(ctx, r, tx, s.eventContext(cmd.CorrelationID, cmd.CausationID))
+		var err error
+		result, err = s.process(ctx, r, cmd)
+		return err
 	})
 	if err != nil {
 		return WagerResult{}, err
 	}
 	return result, nil
+}
+
+type InboundMessage struct {
+	Consumer  string
+	MessageID string
+	Hash      string
+}
+
+type MessageResult struct {
+	WagerResult
+	Duplicate bool
+}
+
+func (s *Wagers) ProcessMessage(ctx context.Context, msg InboundMessage, cmd WagerCommand) (MessageResult, error) {
+	if _, err := s.newTransaction(cmd.Request); err != nil {
+		return MessageResult{}, err
+	}
+
+	var result MessageResult
+	err := s.store.InTx(ctx, func(r *store.Repos) error {
+		inserted, err := r.Inbox.Insert(ctx, msg.Consumer, msg.MessageID, msg.Hash, s.now())
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			hash, err := r.Inbox.Hash(ctx, msg.Consumer, msg.MessageID)
+			if err != nil {
+				return err
+			}
+			if hash != msg.Hash {
+				return fmt.Errorf("%w: %s", domain.ErrMessageIDConflict, msg.MessageID)
+			}
+			result = MessageResult{Duplicate: true}
+			return nil
+		}
+
+		wager, err := s.process(ctx, r, cmd)
+		if err != nil {
+			return err
+		}
+		result = MessageResult{WagerResult: wager}
+		return r.Inbox.Complete(ctx, msg.Consumer, msg.MessageID, wager.Transaction.ID(), s.now())
+	})
+	if err != nil {
+		return MessageResult{}, err
+	}
+	return result, nil
+}
+
+func (s *Wagers) process(ctx context.Context, r *store.Repos, cmd WagerCommand) (WagerResult, error) {
+	tx, err := s.newTransaction(cmd.Request)
+	if err != nil {
+		return WagerResult{}, err
+	}
+	inserted, err := r.Transactions.InsertIfAbsent(ctx, tx, cmd.CorrelationID)
+	if err != nil {
+		return WagerResult{}, err
+	}
+	if !inserted {
+		return s.replay(ctx, r, cmd.Request)
+	}
+	if err := s.settle(ctx, r, tx, s.eventContext(cmd.CorrelationID, cmd.CausationID)); err != nil {
+		return WagerResult{}, err
+	}
+	return WagerResult{Transaction: tx}, nil
 }
 
 func (s *Wagers) settle(ctx context.Context, r *store.Repos, tx *domain.WagerTransaction, eventCtx domain.EventContext) error {
