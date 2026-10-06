@@ -356,6 +356,45 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - `TestWalletAPI`, 19 casos com a aplicação completa via Fx, Postgres, LocalStack e Keycloak reais;
   - fluxo manual com curl e token real no compose: 201, 409, 200, ledger, 403 para provedor e 401 sem token, com os eventos na outbox.
 
+## D-023 — Hash canônico do payload e parsing único da operação (etapa 2.1)
+
+- **Contexto:** o README (§9) pede um "hash determinístico dos campos de negócio, usando JSON canônico com ordenação de chaves", sem a chave de idempotência e sem metadados de transporte, com equivalência entre HTTP e SQS. Pede também: "caso aceite formas equivalentes, documente a normalização anterior ao hash".
+- **Parsing único:** `domain.WagerRequestInput` define o formato JSON da operação, igual no corpo HTTP e no `data` da mensagem SQS, todos os campos como string. `domain.ParseWagerRequest(input, idempotencyKey)` valida e produz `domain.WagerRequest`, que calcula o hash.
+  - O HTTP passa a chave do header `Idempotency-Key`; o SQS passa `data.idempotencyKey`. Os dois canais **não têm** código de validação próprio, então não podem divergir.
+  - `money.amount` numérico (ex.: `25.00` sem aspas) não decodifica, porque não aceitamos float na entrada.
+- **Algoritmo:** `hex(SHA-256(JSON canônico))`, gravado em `wager_transactions.payload_hash`.
+  - **Campos incluídos:** `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency` e `referenceExternalTransactionId`, este **omitido** quando ausente, nunca `""` nem `null`.
+  - **Excluídos:** a chave de idempotência e todo metadado de transporte (`messageId`, `type`, `occurredAt`, headers, correlation id).
+  - **Forma canônica:** objeto com chaves em ordem lexicográfica, também no `money` aninhado (o `encoding/json` ordena as chaves de mapas), sem espaços, todos os valores como string.
+  - Exemplo do README:
+    ```
+    {"externalTransactionId":"transaction-123","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","providerId":"provider-a","roundId":"round-987","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37"}
+    → 629836932b79106b99523d06a1e7fa80689b0ea1e1c47aa3f0a5a2c87d0c4344
+    ```
+    Esse valor foi conferido de forma independente com Python (`json.dumps(sort_keys=True, separators=(',',':'))` + `hashlib.sha256`) e está fixado num teste *golden*, que falha se o algoritmo mudar por acidente.
+- **Normalizações e formas aceitas:**
+
+  | Campo | Regra | Normalização antes do hash |
+  | --- | --- | --- |
+  | `playerId`, `walletId` | UUID canônico 8-4-4-4-12, sem `{}`, `urn:uuid:` ou forma sem hífens; UUID nulo recusado | **maiúsculas → minúsculas** (UUID não diferencia caixa) |
+  | `providerId`, `externalTransactionId`, `roundId`, `gameId`, `referenceExternalTransactionId` | `^[A-Za-z0-9._:-]{1,128}$` | nenhuma |
+  | Chave de idempotência | `^[A-Za-z0-9._:-]{1,256}$`; comporta `{providerId}:{externalTransactionId}` | nenhuma, e **nunca substituída** por uma chave calculada |
+  | `kind` | `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, exatos e em maiúsculas; `OPENING` → `UNSUPPORTED_KIND` | nenhuma |
+  | `money` | `ParseMoney` estrito (D-011): uma única forma textual por valor | nenhuma necessária |
+
+- **Charset restrito nos identificadores:**
+  - Opções: charset restrito × texto livre até 128 caracteres.
+  - Motivo: elimina ambiguidades de Unicode. "é" composto e decomposto são bytes diferentes e gerariam dois hashes para o "mesmo" texto. Também mantém os IDs seguros em logs e em URLs (`/providers/{id}/...`), sem nada a normalizar.
+  - Espaço nas pontas é recusado, nunca removido em silêncio.
+- **Testes** (`wager_request_test.go`):
+  - JSON canônico exato e hash golden;
+  - referência só entra no hash quando presente;
+  - a chave de idempotência não afeta o hash;
+  - **mensagem SQS** (chaves em outra ordem, envelope com `messageId`/`occurredAt`) e **corpo HTTP** (UUID em maiúsculas, espaços) geram **o mesmo hash**;
+  - cada um dos 10 campos de negócio altera o hash;
+  - 22 entradas inválidas recusadas com o erro correto.
+- **Uso:** as regras de replay (mesma chave e mesmo hash → resultado persistido com `idempotentReplay: true`; mesma chave e hash diferente → 409; mesmo `externalTransactionId` com outra chave → 409) são aplicadas pelo `ProcessWager`, na etapa 2.2.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -396,3 +435,6 @@ O tipo `xid` não tem operador de ordenação, e o teste ignorava o erro do `Sca
 
 ### P-012 — Tempo da suíte de integração (observação, etapa 1.7)
 A suíte leva cerca de 110s, com três testes subindo Postgres, LocalStack e Keycloak. Ainda é aceitável. Se crescer no Dia 2/3, avaliar compartilhar a stack entre os testes de um pacote.
+
+### P-013 — Docker indisponível no WSL durante a verificação (etapa 2.1, ambiente)
+Depois que a suíte de integração passou (190s), o Docker Desktop deixou de responder no WSL ("The command 'docker' could not be found in this WSL 2 distro"), o que impediu subir o compose e rodar a collection do Postman. É um problema do ambiente local, não do projeto. Depois que o Docker Desktop foi reaberto, a verificação foi refeita por completo: unitários com `-race`, integração (108s), compose do zero com `/health/ready` ok e a collection do Postman (47 requisições, 128 asserções). Tudo passou.
