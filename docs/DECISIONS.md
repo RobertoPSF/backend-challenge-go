@@ -224,6 +224,46 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
 - **Ausência de referência é `NULL`, nunca `''`:** os repositórios gravam campos opcionais vazios como `NULL`, e o domínio usa `""` para ausente.
 - **Migrations:** `000001`–`000005`, uma por tabela, cada uma com seus grants. O `down` remove a tabela e a função de trigger. Comandos: `make migrate-up`, `make migrate-down` (um passo), `make migrate-down-all` e `make migrate-version`. Verificado: `down -all` → `up` limpo, no compose e em teste (`TestMigrations_UpDownUp`).
 
+## D-018 — Acesso a dados: store concreto com Unit of Work (etapa 1.5)
+
+- **Contexto:** o README (§4) pede para documentar "a delimitação da transação SQL entre os repositórios" e para que "transações, locks e constraints permaneçam explícitos e verificáveis".
+- **Opções:**
+  - (A) interfaces na aplicação + Unit of Work: permite repositórios falsos, ao custo de mais código e indireção;
+  - (B) funções do store recebendo `pgx.Tx`: o mínimo de código, mas a aplicação manipula `pgx.Tx`;
+  - (C) store concreto + Unit of Work, sem interfaces.
+- **Decisão:** (C), pacote `internal/store`.
+  - `st.InTx(ctx, func(r *store.Repos) error)` abre **uma** transação `READ COMMITTED`. Todos os repositórios em `r` (`Wallets`, `Transactions`, `Ledger`, `Outbox`) usam essa mesma transação, que faz commit se `fn` retornar `nil` e rollback em qualquer erro, inclusive `panic`, via `defer Rollback` com `context.WithoutCancel`.
+  - `st.Read()` devolve os mesmos repositórios ligados ao pool, para leituras fora de transação.
+  - **A transação é delimitada sempre no caso de uso, nunca dentro de um repositório.** Os repositórios usam uma interface interna `querier` (`Exec`/`Query`/`QueryRow`), satisfeita tanto por `pgx.Tx` quanto por `*pgxpool.Pool`.
+  - A aplicação não manipula tipos do pgx. Consequência: os casos de uso só são testados com Postgres real, o que o README já exige para as garantias.
+- **Biblioteca:** `pgx/v5` com `pgxpool`, SQL escrito à mão em cada repositório, sem ORM nem gerador.
+- **Mapeamento de `Money`:** `BIGINT` (centavos) + `CHAR(3)` (moeda), reconstruído por `domain.NewMoney` + `ParseCurrency`. No ledger, valor e saldos compartilham a coluna `currency`. Na transação, `amount`/`currency` e `balance_after`/`balance_currency` são pares independentes (D-016).
+- **Campos opcionais:** `""` no domínio vira `NULL` no banco e volta como `""` (testado).
+
+## D-019 — Retry de transação, timeouts e classificação de erros (etapa 1.5)
+
+- **Retry automático da transação inteira:** até **3 tentativas**, com backoff curto (10ms × tentativa + jitter de até 10ms), para:
+  - `ErrConcurrentUpdate`: `UPDATE wallets ... WHERE version = $expected` afetou 0 linhas;
+  - `40001` (`serialization_failure`) e `40P01` (`deadlock_detected`).
+  - Cada retry incrementa `wallet_concurrency_conflicts_total{reason="version|serialization|deadlock"}` e gera um log WARN.
+  - Esgotadas as tentativas, retorna `ErrConcurrentUpdate`.
+  - **Contrato:** `fn` pode ser executada mais de uma vez, então não pode ter efeitos fora da transação, como publicar no SQS ou chamar HTTP.
+- **Timeouts na conexão** (parâmetros de runtime do pool, configuráveis): `lock_timeout = DB_LOCK_TIMEOUT` (padrão 5s) e `statement_timeout = DB_STATEMENT_TIMEOUT` (padrão 10s), com a validação `lock < statement`. Nenhuma transação espera indefinidamente por um lock de carteira.
+- **Falhas transitórias** viram `store.ErrUnavailable`, que vai mapear para HTTP 503 e retry no SQS:
+  - `55P03` (`lock_not_available`, estouro do `lock_timeout`), `57014` (`query_canceled`, `statement_timeout`), `53300` (`too_many_connections`), `57P01` (`admin_shutdown`), `57P03` (`cannot_connect_now`) e a classe `08` (conexão);
+  - erros de conexão do pgconn, timeouts de rede e erros "seguros para repetir".
+  - Se o próprio `ctx` foi cancelado (cliente desistiu ou shutdown), o erro do contexto é devolvido como está, e não como indisponibilidade.
+- **Outros mapeamentos:** `pgx.ErrNoRows` vira `store.ErrNotFound`; o unique `wallets_player_currency_uk` vira `domain.ErrWalletAlreadyExists` (categoria CONFLICT).
+- **Verificado em teste** (`TestStore`, 11 casos com Postgres real):
+  - ida e volta do banco para abertura, transação externa e ledger;
+  - rollback completo em erro;
+  - versão desatualizada → `ErrConcurrentUpdate`;
+  - retry com sucesso na 2ª tentativa e métrica incrementada; limite de 3 tentativas;
+  - **lock de carteira além do `lock_timeout` → `ErrUnavailable` em cerca de 500ms;**
+  - **lock de uma carteira não bloqueia outra carteira** (sem lock global, README §5.6);
+  - paginação do ledger estável por `(created_at, id)`, com lançamentos encadeados.
+- **Tempo:** a reidratação normaliza os instantes para UTC truncado em µs, porque o pgx devolve `TIMESTAMPTZ` no fuso local. O instante não muda, e o valor relido do banco fica idêntico ao criado em memória.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

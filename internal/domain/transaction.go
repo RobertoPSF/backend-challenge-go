@@ -116,7 +116,13 @@ func newOpeningTransaction(walletID, playerID uuid.UUID, amount Money, now time.
 }
 
 func RehydrateWagerTransaction(s WagerTransactionSnapshot) (*WagerTransaction, error) {
-	t := &WagerTransaction{s: s.clone()}
+	s = s.clone()
+	s.CreatedAt = normalizeTime(s.CreatedAt)
+	s.UpdatedAt = normalizeTime(s.UpdatedAt)
+	if s.ProcessedAt != nil {
+		*s.ProcessedAt = normalizeTime(*s.ProcessedAt)
+	}
+	t := &WagerTransaction{s: s}
 	if err := t.validate(); err != nil {
 		return nil, err
 	}

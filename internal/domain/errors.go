@@ -32,6 +32,8 @@ var (
 	ErrInvalidTransaction = newError(KindValidation, "INVALID_REQUEST", "invalid transaction data")
 	ErrUnsupportedKind    = newError(KindValidation, "UNSUPPORTED_KIND", "transaction kind not accepted from external sources")
 
+	ErrWalletAlreadyExists = newError(KindConflict, "WALLET_ALREADY_EXISTS", "player already has a wallet in this currency")
+
 	ErrCurrencyMismatch  = newError(KindBusiness, "CURRENCY_MISMATCH", "currencies do not match")
 	ErrInsufficientFunds = newError(KindBusiness, "INSUFFICIENT_FUNDS", "insufficient funds")
 	ErrMoneyOverflow     = newError(KindBusiness, "AMOUNT_OUT_OF_RANGE", "monetary value out of range")

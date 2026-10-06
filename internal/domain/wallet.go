@@ -24,8 +24,8 @@ func RehydrateWallet(id, playerID uuid.UUID, balance Money, version int64, creat
 		playerID:  playerID,
 		balance:   balance,
 		version:   version,
-		createdAt: createdAt,
-		updatedAt: updatedAt,
+		createdAt: normalizeTime(createdAt),
+		updatedAt: normalizeTime(updatedAt),
 	}
 	if err := w.validate(); err != nil {
 		return nil, err

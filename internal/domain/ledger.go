@@ -26,7 +26,7 @@ type LedgerEntry struct {
 }
 
 func NewLedgerEntry(walletID, transactionID uuid.UUID, direction Direction, amount, balanceBefore, balanceAfter Money, now time.Time) (LedgerEntry, error) {
-	return RehydrateLedgerEntry(newID(), walletID, transactionID, direction, amount, balanceBefore, balanceAfter, normalizeTime(now))
+	return RehydrateLedgerEntry(newID(), walletID, transactionID, direction, amount, balanceBefore, balanceAfter, now)
 }
 
 func RehydrateLedgerEntry(id, walletID, transactionID uuid.UUID, direction Direction, amount, balanceBefore, balanceAfter Money, createdAt time.Time) (LedgerEntry, error) {
@@ -38,7 +38,7 @@ func RehydrateLedgerEntry(id, walletID, transactionID uuid.UUID, direction Direc
 		amount:        amount,
 		balanceBefore: balanceBefore,
 		balanceAfter:  balanceAfter,
-		createdAt:     createdAt,
+		createdAt:     normalizeTime(createdAt),
 	}
 	if err := e.validate(); err != nil {
 		return LedgerEntry{}, err

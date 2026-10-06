@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"go.uber.org/fx"
@@ -22,8 +23,10 @@ type Config struct {
 }
 
 type Database struct {
-	URL      string `env:"DATABASE_URL,required,notEmpty"`
-	MaxConns int32  `env:"DB_MAX_CONNS" envDefault:"10"`
+	URL              string        `env:"DATABASE_URL,required,notEmpty"`
+	MaxConns         int32         `env:"DB_MAX_CONNS" envDefault:"10"`
+	LockTimeout      time.Duration `env:"DB_LOCK_TIMEOUT" envDefault:"5s"`
+	StatementTimeout time.Duration `env:"DB_STATEMENT_TIMEOUT" envDefault:"10s"`
 }
 
 type AWS struct {
@@ -51,6 +54,12 @@ func (c Config) Validate() error {
 	var errs []error
 	if c.Database.MaxConns < 1 {
 		errs = append(errs, errors.New("DB_MAX_CONNS must be >= 1"))
+	}
+	if c.Database.LockTimeout <= 0 || c.Database.StatementTimeout <= 0 {
+		errs = append(errs, errors.New("DB_LOCK_TIMEOUT and DB_STATEMENT_TIMEOUT must be > 0"))
+	}
+	if c.Database.LockTimeout >= c.Database.StatementTimeout {
+		errs = append(errs, errors.New("DB_LOCK_TIMEOUT must be lower than DB_STATEMENT_TIMEOUT"))
 	}
 	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.AWS.InputQueue, "SQS_EVENTS_QUEUE": c.AWS.EventsQueue} {
 		if !strings.HasSuffix(queue, ".fifo") {

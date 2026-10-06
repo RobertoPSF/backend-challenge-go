@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
@@ -19,6 +20,8 @@ func NewPool(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*pgxpool.Poo
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
 	poolCfg.MaxConns = cfg.Database.MaxConns
+	poolCfg.ConnConfig.RuntimeParams["lock_timeout"] = strconv.FormatInt(cfg.Database.LockTimeout.Milliseconds(), 10)
+	poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(cfg.Database.StatementTimeout.Milliseconds(), 10)
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
@@ -30,7 +33,8 @@ func NewPool(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*pgxpool.Poo
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)
 			}
-			log.Info("postgres pool ready", "maxConns", poolCfg.MaxConns)
+			log.Info("postgres pool ready", "maxConns", poolCfg.MaxConns,
+				"lockTimeout", cfg.Database.LockTimeout.String(), "statementTimeout", cfg.Database.StatementTimeout.String())
 			return nil
 		},
 		OnStop: func(context.Context) error {

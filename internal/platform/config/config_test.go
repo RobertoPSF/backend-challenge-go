@@ -39,6 +39,8 @@ func TestLoad_RejectsInvalidConfig(t *testing.T) {
 		"zero max conns":       {env: map[string]string{"DB_MAX_CONNS": "0"}, want: "DB_MAX_CONNS"},
 		"non fifo queue":       {env: map[string]string{"SQS_INPUT_QUEUE": "wager-transactions"}, want: "SQS_INPUT_QUEUE"},
 		"invalid log level":    {env: map[string]string{"LOG_LEVEL": "LOUD"}, want: "LogLevel"},
+		"lock above statement": {env: map[string]string{"DB_LOCK_TIMEOUT": "10s", "DB_STATEMENT_TIMEOUT": "5s"}, want: "DB_LOCK_TIMEOUT"},
+		"zero lock timeout":    {env: map[string]string{"DB_LOCK_TIMEOUT": "0s"}, want: "DB_LOCK_TIMEOUT"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
