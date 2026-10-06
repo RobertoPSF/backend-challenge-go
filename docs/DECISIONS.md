@@ -395,6 +395,47 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - 22 entradas inválidas recusadas com o erro correto.
 - **Uso:** as regras de replay (mesma chave e mesmo hash → resultado persistido com `idempotentReplay: true`; mesma chave e hash diferente → 409; mesmo `externalTransactionId` com outra chave → 409) são aplicadas pelo `ProcessWager`, na etapa 2.2.
 
+## D-024 — `ProcessWager` e a estratégia de concorrência (etapa 2.2)
+
+- **Estratégia (README §8):** lock pessimista por carteira, combinado com uma checagem otimista de versão e as constraints do banco. Foi confirmada pelo usuário depois de comparar com otimista puro e atualização atômica condicionada: o pessimista lida melhor com a alta disputa numa mesma carteira, mantém a regra de saldo no agregado (README §6.2) e serializa as regras que dependem do estado atual, como a reversão única (D-003).
+- **Fluxo** (`internal/app/wagers.go`), em **uma** transação `READ COMMITTED` via `store.InTx`:
+  1. Cria a `WagerTransaction` em `PENDING` a partir do `WagerRequest` validado (D-023).
+  2. `INSERT ... ON CONFLICT DO NOTHING`, que vale contra **qualquer** índice único: chave de idempotência ou `externalTransactionId`.
+     - FK de carteira violada → `WALLET_NOT_FOUND`, nada persistido (D-002).
+     - Não inseriu → replay ou conflito:
+       - busca por `(provider_id, idempotency_key)`: com o mesmo hash, **replay**, que devolve a transação persistida com `Replay=true`, inclusive o `balanceAfter` original; com hash diferente, `IDEMPOTENCY_KEY_CONFLICT` (409);
+       - não achou pela chave, mas existe pelo `(provider_id, external_transaction_id)` → `EXTERNAL_TRANSACTION_CONFLICT` (409): a operação não pode ser reaplicada com outra chave.
+  3. `SELECT ... FROM wallets WHERE id = $1 FOR NO KEY UPDATE`: **o único lock da operação, só da linha daquela carteira**.
+  4. `domain.ApplyToWallet`:
+     - BET → `Debit`; WIN → `Credit`; LOSS → sem movimento;
+     - jogador diferente → `PLAYER_WALLET_MISMATCH`; moeda diferente → `CURRENCY_MISMATCH`; saldo insuficiente → `INSUFFICIENT_FUNDS`.
+  5. Erro de negócio → `MarkRejected(code, saldo observado)` + `WagerTransactionRejected`. Sucesso → lançamento no ledger + `UPDATE wallets ... WHERE version = $esperada` (só se o saldo mudou) + `MarkProcessed(saldo)` + `WagerTransactionProcessed` (+ `WalletBalanceChanged`).
+  6. `UPDATE wager_transactions` com o resultado, outbox e commit.
+  - O `WagerTransaction` é recriado **dentro** de cada tentativa do `InTx`. Num retry, o estado em memória da tentativa anterior, por exemplo `PROCESSED`, não vaza para a nova.
+- **Por que funciona entre processos:**
+  - **50 envios idênticos:** o primeiro `INSERT` grava; os outros **esperam no índice único** até o primeiro terminar. Depois do commit, recebem "conflito", e o `SELECT` seguinte (snapshot novo em `READ COMMITTED`) vê a linha confirmada → replay. Se o primeiro der rollback, um dos outros insere. Resultado: **um** débito.
+  - **Duas BETs distintas de 80.00 sobre 100.00:** as duas inserem a própria transação e disputam o lock da carteira. A segunda espera; quando pega o lock, o `FOR NO KEY UPDATE` devolve a **versão mais recente** da linha (saldo 20.00) → `REJECTED INSUFFICIENT_FUNDS`, com o saldo observado 20.00.
+  - **Carteiras diferentes** não compartilham nenhum lock.
+- **Camadas de defesa:**
+  1. lock de linha por carteira;
+  2. `UPDATE ... WHERE version = $esperada`: se algum caminho esquecer o lock, a atualização com versão antiga afeta 0 linhas → retry, nunca lost update (README §5.7);
+  3. `CHECK (balance >= 0)`;
+  4. `UNIQUE` de idempotência e de `(wallet, transaction)` no ledger.
+- **`FOR NO KEY UPDATE`, e não `FOR UPDATE`:** ver P-014, que foi descoberto e provado em teste.
+- **Testes** (`wagers_test.go`, Postgres real, com **3 pools de conexão independentes** simulando 3 processos; as 3 instâncias reais com o compose ficam para o Dia 3):
+  - BET, WIN e LOSS (LOSS sem ledger, sem mudança de versão e sem `WalletBalanceChanged`);
+  - as 3 rejeições com o saldo observado e o evento;
+  - carteira inexistente não persiste;
+  - replay devolve o saldo original mesmo depois de outras movimentações;
+  - replay de rejeição; os dois tipos de conflito;
+  - **concorrência:**
+    - a mesma BET 50× em paralelo → 1 processada + 49 replays, 1 débito;
+    - **80 + 80 sobre 100** → 1 `PROCESSED`, 1 `REJECTED INSUFFICIENT_FUNDS` (observado 20.00), saldo 20.00, **um único débito**, e o reenvio das duas não altera nada;
+    - 30 BETs distintas na mesma carteira → saldo 70.00, versão 31, **0 deadlocks**;
+    - 200 BETs em 20 carteiras em paralelo → todas corretas;
+    - em todos os casos, saldo armazenado = créditos − débitos do ledger.
+  - O bloco de concorrência rodou 5× seguidas com `-race`, sem falha.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -438,3 +479,14 @@ A suíte leva cerca de 110s, com três testes subindo Postgres, LocalStack e Key
 
 ### P-013 — Docker indisponível no WSL durante a verificação (etapa 2.1, ambiente)
 Depois que a suíte de integração passou (190s), o Docker Desktop deixou de responder no WSL ("The command 'docker' could not be found in this WSL 2 distro"), o que impediu subir o compose e rodar a collection do Postman. É um problema do ambiente local, não do projeto. Depois que o Docker Desktop foi reaberto, a verificação foi refeita por completo: unitários com `-race`, integração (108s), compose do zero com `/health/ready` ok e a collection do Postman (47 requisições, 128 asserções). Tudo passou.
+
+### P-014 — Deadlock entre a FK de `wager_transactions` e o `SELECT ... FOR UPDATE` da carteira (etapa 2.2)
+- **Sintoma:** com `FOR UPDATE`, o teste "30 BETs distintas na mesma carteira" falhou com `deadlock detected (40P01)` e `canceling statement due to statement timeout (57014)`, e o bloco de concorrência levou 57s. Nenhum valor foi corrompido, porque o banco aborta uma das transações, mas operações legítimas falhavam sob carga. O teste 80 + 80 passou só por sorte de timing.
+- **Causa:** o `INSERT` em `wager_transactions` tem FK para `wallets`, e o Postgres a valida pegando um lock **`FOR KEY SHARE`** na linha da carteira. `FOR UPDATE` **conflita** com `FOR KEY SHARE`. Então:
+  1. A insere (KEY SHARE);
+  2. B insere (KEY SHARE, compatível);
+  3. A pede `FOR UPDATE` e espera o KEY SHARE de B;
+  4. B pede `FOR UPDATE` e espera o KEY SHARE de A → ciclo.
+- **Correção:** `SELECT ... FOR NO KEY UPDATE`, o mesmo lock que o Postgres usa num `UPDATE` que não altera colunas de chave. Ele continua exclusivo entre escritores da mesma carteira (serializa as operações), mas é **compatível com `FOR KEY SHARE`**, então os inserts com FK não entram no ciclo.
+- **Resultado:** o mesmo teste passa sem nenhum deadlock (verificado pela métrica `wallet_concurrency_conflicts_total{reason="deadlock"} = 0`), e o bloco de concorrência caiu de 57s para cerca de 3s.
+- **Alternativa considerada:** travar a carteira **antes** de inserir a transação. Também evita o ciclo, mas faria até os replays esperarem pelo lock da carteira.

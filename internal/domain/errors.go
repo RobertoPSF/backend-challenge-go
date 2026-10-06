@@ -31,12 +31,16 @@ var (
 	ErrInvalidAmount      = newError(KindValidation, "INVALID_AMOUNT", "amount not allowed for this operation")
 	ErrInvalidTransaction = newError(KindValidation, "INVALID_REQUEST", "invalid transaction data")
 	ErrUnsupportedKind    = newError(KindValidation, "UNSUPPORTED_KIND", "transaction kind not accepted from external sources")
+	ErrWalletNotFound     = newError(KindValidation, "WALLET_NOT_FOUND", "wallet does not exist")
 
-	ErrWalletAlreadyExists = newError(KindConflict, "WALLET_ALREADY_EXISTS", "player already has a wallet in this currency")
+	ErrWalletAlreadyExists         = newError(KindConflict, "WALLET_ALREADY_EXISTS", "player already has a wallet in this currency")
+	ErrIdempotencyKeyConflict      = newError(KindConflict, "IDEMPOTENCY_KEY_CONFLICT", "idempotency key already used with a different payload")
+	ErrExternalTransactionConflict = newError(KindConflict, "EXTERNAL_TRANSACTION_CONFLICT", "external transaction already registered with another idempotency key")
 
-	ErrCurrencyMismatch  = newError(KindBusiness, "CURRENCY_MISMATCH", "currencies do not match")
-	ErrInsufficientFunds = newError(KindBusiness, "INSUFFICIENT_FUNDS", "insufficient funds")
-	ErrMoneyOverflow     = newError(KindBusiness, "AMOUNT_OUT_OF_RANGE", "monetary value out of range")
+	ErrCurrencyMismatch     = newError(KindBusiness, "CURRENCY_MISMATCH", "currencies do not match")
+	ErrInsufficientFunds    = newError(KindBusiness, "INSUFFICIENT_FUNDS", "insufficient funds")
+	ErrPlayerWalletMismatch = newError(KindBusiness, "PLAYER_WALLET_MISMATCH", "wallet does not belong to the player")
+	ErrMoneyOverflow        = newError(KindBusiness, "AMOUNT_OUT_OF_RANGE", "monetary value out of range")
 
 	ErrInvalidWallet      = newError(KindInternal, "INVALID_WALLET", "invalid wallet state")
 	ErrInvalidLedgerEntry = newError(KindInternal, "INVALID_LEDGER_ENTRY", "invalid ledger entry")

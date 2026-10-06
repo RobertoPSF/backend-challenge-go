@@ -679,7 +679,7 @@ UoW.Do:
  2. se kind ∈ {REFUND, ROLLBACK}:
         ref := SELECT ... WHERE provider_id=$1 AND external_transaction_id=$2
         - inexistente → MarkPendingReference(next=now+backoff(0)), outbox PendingReference, commit, return 202
- 3. w := SELECT * FROM wallets WHERE id=$1 FOR UPDATE     ← único lock da operação, por carteira
+ 3. w := SELECT * FROM wallets WHERE id=$1 FOR NO KEY UPDATE  ← único lock da operação, por carteira (P-014)
         - inexistente → 422 WALLET_NOT_FOUND sem persistir (rollback; D-002)
         - player diferente / moeda diferente → REJECTED com o código respectivo
  4. regra de negócio (seção 2.3) → decide entre crédito, débito, nada ou rejeição

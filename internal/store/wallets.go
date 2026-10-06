@@ -32,7 +32,7 @@ func (r WalletRepo) Get(ctx context.Context, id uuid.UUID) (*domain.Wallet, erro
 }
 
 func (r WalletRepo) GetForUpdate(ctx context.Context, id uuid.UUID) (*domain.Wallet, error) {
-	return scanWallet(r.q.QueryRow(ctx, `SELECT `+walletColumns+` FROM wallets WHERE id = $1 FOR UPDATE`, id))
+	return scanWallet(r.q.QueryRow(ctx, `SELECT `+walletColumns+` FROM wallets WHERE id = $1 FOR NO KEY UPDATE`, id))
 }
 
 func (r WalletRepo) UpdateBalance(ctx context.Context, w *domain.Wallet, expectedVersion int64) error {
