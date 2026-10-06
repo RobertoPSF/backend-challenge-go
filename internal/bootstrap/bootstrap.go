@@ -5,6 +5,7 @@ import (
 
 	"go.uber.org/fx"
 
+	"github.com/RobertoPSF/backend-challenge-go/internal/app"
 	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
 	"github.com/RobertoPSF/backend-challenge-go/internal/httpapi"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
@@ -33,6 +34,7 @@ func Options() fx.Option {
 		sqsclient.Module,
 		store.Module,
 		auth.Module,
+		app.Module,
 		httpapi.Module,
 	)
 }

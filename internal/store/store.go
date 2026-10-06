@@ -77,7 +77,7 @@ func (s *Store) InTx(ctx context.Context, fn func(r *Repos) error) error {
 		err = s.runTx(ctx, fn)
 		reason, retryable := conflictReason(err)
 		if !retryable {
-			return classify(ctx, err)
+			return Classify(ctx, err)
 		}
 		s.conflicts.WithLabelValues(reason).Inc()
 		s.log.WarnContext(ctx, "transaction conflict, retrying", "reason", reason, "attempt", attempt)
@@ -119,7 +119,7 @@ func conflictReason(err error) (string, bool) {
 	return "", false
 }
 
-func classify(ctx context.Context, err error) error {
+func Classify(ctx context.Context, err error) error {
 	if err == nil || ctx.Err() != nil {
 		return err
 	}

@@ -315,6 +315,47 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - o verificador não inicia sem JWKS.
 - **Comandos:** `make token-provider-a`, `make token-provider-b` e `make token-wallet-service` imprimem um access token; um client inexistente faz o comando falhar.
 
+## D-022 — Endpoints de carteira, contrato HTTP e correlação (etapa 1.7)
+
+- **Camada de aplicação** (`internal/app`): `Wallets.Open`, `Wallets.Get`, `Wallets.Ledger`.
+  - A abertura chama `domain.OpenWallet` e persiste, em **um** `store.InTx`, a carteira, a transação `OPENING`, o lançamento e os 2 eventos da outbox.
+  - Testado consultando o `xmin` das linhas: todas foram gravadas pela mesma transação do banco (README §9).
+  - `app.ErrNotFound` e `app.ErrUnavailable` isolam o HTTP dos detalhes do store. As leituras fora de transação também passam por `store.Classify`, para que uma falha transitória vire 503.
+- **Rotas** (todas exigem `wallet-admin`, README §2):
+
+  | Rota | Sucesso | Erros |
+  | --- | --- | --- |
+  | `POST /wallets` | 201 + `Location` + `{id, playerId, balance, version, createdAt, updatedAt}` | 400 entrada inválida, 409 `WALLET_ALREADY_EXISTS` |
+  | `GET /wallets/{walletId}` | 200 | 400 id inválido, 404 |
+  | `GET /wallets/{walletId}/ledger?cursor=&limit=` | 200 `{items, nextCursor}` | 400 `limit`/`cursor` inválidos, 404 carteira inexistente |
+
+- **Paginação do ledger:**
+  - ordenação estável por `(created_at, id)` (o id é UUIDv7), com a consulta `(created_at, id) > cursor`;
+  - o cursor é **opaco**: base64url do JSON `{t, id}`, e qualquer adulteração resulta em 400;
+  - `limit` padrão 50, aceito de 1 a 200. A consulta busca `limit+1` para saber se há próxima página, e `nextCursor` é `null` na última.
+- **Entrada estrita:**
+  - `DisallowUnknownFields`, limite de 64 KiB, exatamente um objeto JSON;
+  - `playerId` UUID não nulo, `initialBalance` obrigatório;
+  - o dinheiro passa por `domain.ParseMoney`, então um valor numérico (`10.5`) em vez de string é rejeitado.
+- **Mapeamento central de erros** (`writeAppError`):
+
+  | Origem | HTTP | Código |
+  | --- | --- | --- |
+  | `DomainError` categoria VALIDATION | 400 | código do erro (`INVALID_MONEY`, `INVALID_CURRENCY`, ...) |
+  | Requisição malformada | 400 | `INVALID_REQUEST` |
+  | `DomainError` categoria CONFLICT | 409 | código do erro |
+  | `DomainError` categoria BUSINESS | 422 | código do erro |
+  | `app.ErrNotFound` | 404 | `NOT_FOUND` |
+  | `app.ErrUnavailable` | 503 + `Retry-After: 1` | `TEMPORARILY_UNAVAILABLE` |
+  | Qualquer outro erro | 500 (logado) | `INTERNAL_ERROR` |
+
+  Formato: `{"error":{"code","message","correlationId"}}`.
+- **Correlação (antecipada da etapa 2.9):** o middleware `CorrelationID` propaga `X-Correlation-Id`, aceito até 128 caracteres, ou gera um UUID novo. O valor é devolvido no cabeçalho da resposta, no corpo de erro e gravado em `wager_transactions.correlation_id` e nos eventos da outbox.
+- **Fx:** `metrics.Module` passou a fornecer o registro também como `prometheus.Registerer`, usado pelo store.
+- **Verificado:**
+  - `TestWalletAPI`, 19 casos com a aplicação completa via Fx, Postgres, LocalStack e Keycloak reais;
+  - fluxo manual com curl e token real no compose: 201, 409, 200, ledger, 403 para provedor e 401 sem token, com os eventos na outbox.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -346,3 +387,12 @@ No pipe `curl | sed`, o status de saída é o do `sed`, então uma falha do `cur
 
 ### P-009 — Teste do Fx quebrou com as variáveis de OIDC obrigatórias (etapa 1.6)
 Regressão esperada, pega pela verificação de fim de etapa. O teste agora sobe também o Keycloak real e define `OIDC_ISSUER`/`OIDC_JWKS_URL`. O tempo da suíte de integração subiu para cerca de 80s; se crescer demais, considerar compartilhar os containers por pacote.
+
+### P-010 — Dependência ausente no grafo do Fx (etapa 1.7)
+O store pedia `prometheus.Registerer`, mas o módulo de métricas só fornecia `*prometheus.Registry`. O teste unitário `TestOptions_DependencyGraphIsComplete` (`fx.ValidateApp`) pegou o problema antes de qualquer execução. Correção: fornecer também o `Registerer`.
+
+### P-011 — `count(DISTINCT xmin)` não funciona em Postgres (etapa 1.7, só no teste)
+O tipo `xid` não tem operador de ordenação, e o teste ignorava o erro do `Scan`, o que produziu um falso negativo na verificação de atomicidade. Correção: `xmin::text` e checagem do erro.
+
+### P-012 — Tempo da suíte de integração (observação, etapa 1.7)
+A suíte leva cerca de 110s, com três testes subindo Postgres, LocalStack e Keycloak. Ainda é aceitável. Se crescer no Dia 2/3, avaliar compartilhar a stack entre os testes de um pacote.

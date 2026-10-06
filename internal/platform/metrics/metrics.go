@@ -6,7 +6,10 @@ import (
 	"go.uber.org/fx"
 )
 
-var Module = fx.Module("metrics", fx.Provide(NewRegistry))
+var Module = fx.Module("metrics", fx.Provide(
+	NewRegistry,
+	func(reg *prometheus.Registry) prometheus.Registerer { return reg },
+))
 
 func NewRegistry() *prometheus.Registry {
 	reg := prometheus.NewRegistry()

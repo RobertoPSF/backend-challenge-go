@@ -34,9 +34,13 @@ type storeEnv struct {
 
 func newStoreEnv(t *testing.T, lockTimeout time.Duration) storeEnv {
 	t.Helper()
-	pg := testinfra.StartPostgres(t)
+	return newStoreOn(t, testinfra.StartPostgres(t).AppURL, lockTimeout)
+}
+
+func newStoreOn(t *testing.T, databaseURL string, lockTimeout time.Duration) storeEnv {
+	t.Helper()
 	cfg := config.Config{Database: config.Database{
-		URL: pg.AppURL, MaxConns: 10, LockTimeout: lockTimeout, StatementTimeout: 10 * time.Second,
+		URL: databaseURL, MaxConns: 10, LockTimeout: lockTimeout, StatementTimeout: 10 * time.Second,
 	}}
 	lc := fxtest.NewLifecycle(t)
 	pool, err := postgres.NewPool(lc, cfg, silentLog)

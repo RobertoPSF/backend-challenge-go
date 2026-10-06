@@ -2,21 +2,35 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/RobertoPSF/backend-challenge-go/internal/auth"
 )
 
-func NewRouter(reg *prometheus.Registry, health *Health) http.Handler {
+func NewRouter(reg *prometheus.Registry, health *Health, verifier *auth.Verifier, wallets *WalletHandlers, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
+	r.Use(middleware.Recoverer, CorrelationID)
 
 	r.Get("/health/live", health.Live)
 	r.Get("/health/ready", health.Ready)
 	r.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+
+	r.Group(func(r chi.Router) {
+		r.Use(Authenticate(verifier, log))
+
+		r.Group(func(r chi.Router) {
+			r.Use(RequireRole(auth.RoleWalletAdmin))
+			r.Post("/wallets", wallets.Open)
+			r.Get("/wallets/{walletId}", wallets.Get)
+			r.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+		})
+	})
 
 	return r
 }
