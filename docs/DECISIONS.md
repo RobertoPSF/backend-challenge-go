@@ -611,6 +611,48 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - compose: uma mensagem enviada com `awslocal` para a fila foi processada pela aplicação rodando (saldo 100.00 → 75.00).
 - **Pendente para o Dia 3:** teste automatizado da liberação de mensagens no shutdown e de "processo morto entre o commit e o `DeleteMessage`" (cenário 5 do README §13), com injeção de falhas.
 
+## D-029 — Publicação da outbox e contrato dos eventos de saída (etapa 2.7)
+
+- **Contexto:** o README (§11) pede um worker separado que publique a outbox, suporte vários publishers, disputa por registros, backoff e recuperação de trabalho abandonado, preserve o `eventId` nas republicações e provisione o destino dos eventos, com contrato de roteamento e consumo documentado.
+- **Ciclo de um evento:**
+  1. **Gravado** na outbox no mesmo commit da operação (snapshot JSON imutável, D-014/D-017). Por construção, a publicação sempre acontece **depois** do commit (README §5.4).
+  2. **Reservado** (`ClaimBatch`): `UPDATE ... SET locked_by = <instância/token>, locked_until = agora + OUTBOX_LEASE, attempts = attempts + 1` sobre um `SELECT ... FOR UPDATE SKIP LOCKED`. A reserva é feita fora de uma transação longa: o lock de linha dura só o tempo do `UPDATE`, e quem protege a posse durante a publicação é o **lease**.
+  3. **Publicado** fora de qualquer transação SQL: `SendMessage` com timeout `OUTBOX_PUBLISH_TIMEOUT`.
+  4. **Confirmado:** `published_at = agora`, mas só se `locked_by` ainda for o token desta reserva e `published_at IS NULL`.
+  5. **Falha:** `next_attempt_at = agora + min(base × 2^(attempts−1), máximo)`, `last_error` e a reserva liberada. **Não há limite de tentativas**: um evento confirmado no banco nunca é descartado (README §3), e o atraso é exposto por métrica (etapa 2.9).
+- **Recuperação de trabalho abandonado:**
+  - queda **entre o commit e a publicação**: o evento continua `published_at IS NULL` e qualquer publisher o pega;
+  - queda **entre a publicação e a confirmação**: o `locked_until` expira e outra instância republica **o mesmo payload com o mesmo `eventId`**. A entrega é **at-least-once**, e a deduplicação FIFO do SQS (`MessageDeduplicationId = eventId`, 5 min) costuma absorver a cópia.
+  - Uma reserva **ativa** nunca é tomada por outra instância (testado).
+- **Ordem por carteira:**
+  - Opções: (a) ordem garantida × (b) melhor esforço.
+  - Decisão: **(a)**. A reserva só considera o **evento mais antigo ainda não publicado de cada carteira** (`DISTINCT ON (aggregate_id) ... ORDER BY occurred_at, event_id`, apoiado pelo índice parcial `outbox_unpublished_by_aggregate_idx`, migration `000007`). O evento seguinte da mesma carteira só é elegível depois que o anterior foi publicado.
+  - Com o grupo FIFO por carteira, os consumidores recebem os eventos de cada carteira **em ordem estrita**, inclusive com vários publishers concorrentes (testado com 3 publishers e 6 goroutines: versões 1..7 em sequência).
+  - **Custo aceito:** uma carteira muito movimentada publica um evento por ciclo, e um evento com falha persistente retém os seguintes **da mesma carteira** até sair. As outras carteiras não são afetadas.
+  - Dentro de uma mesma operação, a ordem é `WagerTransactionProcessed` → `WalletBalanceChanged`: o `occurred_at` é igual e o desempate é pelo `event_id` (UUIDv7, monotônico).
+- **Shutdown:** o contexto cancelado interrompe o lote; os eventos reservados ainda não publicados são **liberados** (`locked_by = NULL`) para outra instância. Se a liberação falhar, o lease expira de qualquer forma.
+- **Configuração:** `ENABLE_OUTBOX_PUBLISHER`, `OUTBOX_WORKERS` (1), `OUTBOX_BATCH_SIZE` (50), `OUTBOX_LEASE` (30s, precisa ser maior que `OUTBOX_PUBLISH_TIMEOUT` = 10s), `OUTBOX_POLL_INTERVAL` (500ms), `OUTBOX_RETRY_BASE_DELAY` (1s) e `OUTBOX_RETRY_MAX_DELAY` (5m).
+- **Contrato de saída (roteamento e consumo):**
+
+  | Item | Valor |
+  | --- | --- |
+  | Destino | fila SQS FIFO `wallet-events.fifo` (DLQ `wallet-events-dlq.fifo` para os consumidores, `maxReceiveCount` 5) |
+  | Corpo | envelope JSON do evento: `eventId`, `eventType`, `aggregateId` (= `walletId`), `correlationId`, `causationId?`, `occurredAt` (UTC, RFC 3339), `version`, `data` tipado, com dinheiro em string decimal |
+  | `MessageGroupId` | `walletId`: ordem estrita por carteira, carteiras em paralelo |
+  | `MessageDeduplicationId` | `eventId` |
+  | Atributos | `eventType` (String) e `eventVersion` (Number), para filtrar ou rotear sem abrir o corpo |
+  | Tipos | `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference` (todos `version` 1) |
+  | Garantia | at-least-once e em ordem por carteira. O consumidor **deve deduplicar por `eventId`**; `WalletBalanceChanged.data.walletVersion` permite detectar lacunas ou reprocessamentos |
+
+- **Testes** (`TestOutboxPublisher`, LocalStack e Postgres reais, repetido 3×):
+  - publicação depois do commit, com grupo = carteira, deduplicação = `eventId`, atributo `eventType` e marcação de `published_at`;
+  - **ordem por carteira com 3 publishers concorrentes**;
+  - **3 publishers e 9 goroutines → cada evento publicado exatamente uma vez** (`attempts = 1` em todos);
+  - falha do broker → `attempts`, `last_error` e `next_attempt_at` futuro, retenção dos eventos seguintes da carteira, publicação depois da recuperação;
+  - **queda entre a publicação e a confirmação**: outra instância respeita o lease ativo, republica depois da expiração com o **mesmo `eventId`** e confirma (`attempts = 2`);
+  - **queda entre o commit e a publicação**: eventos pendentes assumidos por outro publisher.
+  - Compose: depois de toda a collection do Postman, **83/83 eventos publicados**, visíveis na `wallet-events.fifo`.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

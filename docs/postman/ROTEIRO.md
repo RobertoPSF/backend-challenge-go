@@ -71,3 +71,31 @@ UPDATE wallet_ledger_entries SET amount = 1;
 ```
 
 Os valores no banco estão em **centavos** (`BIGINT`): `100000` = `1000.00`. O `UPDATE` no ledger é recusado com `wallet_ledger_entries is append-only`. Os eventos da outbox ficam com `published_at` nulo até o publisher ser implementado (Dia 2).
+
+## 6. Ver os eventos publicados (outbox → SQS)
+
+Toda operação concluída gera eventos que o publisher envia para a fila `wallet-events.fifo` **depois do commit**:
+
+```sh
+docker compose exec postgres psql -U postgres -d wallet -c \
+  "SELECT count(*) FILTER (WHERE published_at IS NULL) AS pendentes, count(*) AS total FROM outbox_events"
+
+docker compose exec localstack awslocal sqs receive-message \
+  --queue-url http://localhost:4566/000000000000/wallet-events.fifo \
+  --max-number-of-messages 10 --message-attribute-names All --attribute-names MessageGroupId
+```
+
+O resultado esperado é `pendentes = 0` em poucos instantes. Cada mensagem tem o envelope do evento no corpo (`eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt`, `version`, `data`), o `MessageGroupId` igual ao `walletId` e o atributo `eventType` para roteamento.
+
+## 7. Enviar uma operação pela fila (SQS)
+
+A mesma operação do `POST /wagering/transactions` pode ser enviada como mensagem. Troque `<walletId>` e `<playerId>` por uma carteira criada antes:
+
+```sh
+docker compose exec localstack awslocal sqs send-message \
+  --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
+  --message-group-id <walletId> --message-deduplication-id msg-001 \
+  --message-body '{"messageId":"msg-001","type":"WagerTransactionRequested","occurredAt":"2026-09-08T12:00:00.000Z","data":{"providerId":"provider-a","externalTransactionId":"sqs-tx-001","idempotencyKey":"provider-a:sqs-tx-001","playerId":"<playerId>","walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}}'
+```
+
+Em seguida, consulte `GET /providers/provider-a/wagering/transactions/sqs-tx-001` ou o saldo da carteira. Uma mensagem inválida vai para `wager-transactions-dlq.fifo`, com o motivo no atributo `failureReason`.

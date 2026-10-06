@@ -49,6 +49,7 @@ func TestLoad_RejectsInvalidConfig(t *testing.T) {
 		"max below base backoff":   {env: map[string]string{"PENDING_BASE_BACKOFF": "10s", "PENDING_MAX_BACKOFF": "1s"}, want: "PENDING_"},
 		"handler above visibility": {env: map[string]string{"SQS_HANDLER_TIMEOUT": "40s"}, want: "SQS_HANDLER_TIMEOUT"},
 		"long poll above 20s":      {env: map[string]string{"SQS_WAIT_TIME": "21s"}, want: "SQS_WAIT_TIME"},
+		"lease below publish":      {env: map[string]string{"OUTBOX_LEASE": "5s", "OUTBOX_PUBLISH_TIMEOUT": "10s"}, want: "OUTBOX_LEASE"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

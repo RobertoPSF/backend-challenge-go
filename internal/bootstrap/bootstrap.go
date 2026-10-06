@@ -14,6 +14,7 @@ import (
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/postgres"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/sqsclient"
+	"github.com/RobertoPSF/backend-challenge-go/internal/publisher"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 	"github.com/RobertoPSF/backend-challenge-go/internal/worker"
 )
@@ -40,5 +41,6 @@ func Options() fx.Option {
 		httpapi.Module,
 		worker.Module,
 		consumer.Module,
+		publisher.Module,
 	)
 }

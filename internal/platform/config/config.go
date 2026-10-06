@@ -23,6 +23,18 @@ type Config struct {
 	OIDC       OIDC
 	Pending    Pending
 	Consumer   Consumer
+	Outbox     Outbox
+}
+
+type Outbox struct {
+	Enabled        bool          `env:"ENABLE_OUTBOX_PUBLISHER" envDefault:"true"`
+	Workers        int           `env:"OUTBOX_WORKERS" envDefault:"1"`
+	BatchSize      int           `env:"OUTBOX_BATCH_SIZE" envDefault:"50"`
+	Lease          time.Duration `env:"OUTBOX_LEASE" envDefault:"30s"`
+	PollInterval   time.Duration `env:"OUTBOX_POLL_INTERVAL" envDefault:"500ms"`
+	PublishTimeout time.Duration `env:"OUTBOX_PUBLISH_TIMEOUT" envDefault:"10s"`
+	RetryBaseDelay time.Duration `env:"OUTBOX_RETRY_BASE_DELAY" envDefault:"1s"`
+	RetryMaxDelay  time.Duration `env:"OUTBOX_RETRY_MAX_DELAY" envDefault:"5m"`
 }
 
 type Consumer struct {
@@ -102,6 +114,11 @@ func (c Config) Validate() error {
 		cs.RetryMaxDelay > 12*time.Hour || cs.Name == "" || len(cs.KnownProviders) == 0 {
 		errs = append(errs, errors.New("SQS consumer settings invalid: SQS_WAIT_TIME <= 20s, SQS_HANDLER_TIMEOUT < SQS_VISIBILITY_TIMEOUT, "+
 			"0 < SQS_RETRY_BASE_DELAY <= SQS_RETRY_MAX_DELAY <= 12h, SQS_WORKERS >= 1, KNOWN_PROVIDERS not empty"))
+	}
+	if o := c.Outbox; o.Workers < 1 || o.BatchSize < 1 || o.PollInterval <= 0 || o.PublishTimeout <= 0 ||
+		o.Lease <= o.PublishTimeout || o.RetryBaseDelay <= 0 || o.RetryMaxDelay < o.RetryBaseDelay {
+		errs = append(errs, errors.New("OUTBOX_* settings invalid: positive values, OUTBOX_LEASE > OUTBOX_PUBLISH_TIMEOUT, "+
+			"OUTBOX_RETRY_MAX_DELAY >= OUTBOX_RETRY_BASE_DELAY"))
 	}
 	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.AWS.InputQueue, "SQS_EVENTS_QUEUE": c.AWS.EventsQueue, "SQS_INPUT_DLQ": c.AWS.InputDLQ} {
 		if !strings.HasSuffix(queue, ".fifo") {
