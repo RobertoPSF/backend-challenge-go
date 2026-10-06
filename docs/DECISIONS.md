@@ -520,6 +520,42 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - **80 + 80 sobre 100 via HTTP** (um 201, um 422, saldo 20.00) e **50 envios idênticos via HTTP** (um 201 e 49 × 200, saldo 90.00).
 - **Postman:** pasta `05 - Operações de aposta` (23 requisições); a collection passou a ter 70 requisições e 193 asserções, todas passando no newman.
 
+## D-027 — Worker de referências pendentes (etapa 2.5)
+
+- **Contexto:** o README (§7) pede que a operação fique `PENDING_REFERENCE` quando a referência ainda não chegou, que um worker tente de novo com backoff exponencial, inclusive depois de reiniciar, e que haja limite de tentativas ou TTL com `REJECTED` e código de referência não encontrada. O §6.3 exige que "todo `PENDING` confirmado" tenha retomada durável por outra instância.
+- **Algoritmo** (`Wagers.ResumeNextPending`), **uma pendência por transação SQL**:
+  1. `SELECT ... WHERE status = 'PENDING_REFERENCE' AND next_attempt_at <= agora ORDER BY next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED`: cada goroutine e cada instância pega uma pendência diferente sem esperar as outras.
+  2. A referência existe e terminou → o **mesmo `settle`** do `ProcessWager` (D-025): valida, trava a carteira e aplica (ou rejeita com `REFERENCE_NOT_PROCESSED`/`REFERENCE_MISMATCH`/...).
+  3. A referência não existe ou ainda está pendente → `attempts + 1`:
+     - se chegou a `PENDING_MAX_ATTEMPTS` ou passou de `expires_at` (`PENDING_TTL`): trava a carteira e grava `REJECTED REFERENCE_NOT_FOUND`, com o saldo observado e o evento `WagerTransactionRejected`;
+     - senão, reagenda `next_attempt_at = agora + backoff(attempts)`.
+  4. Commit. Se o processo morrer antes do commit, o rollback libera o lock e a pendência continua lá para outra instância: **retomada durável**, porque o estado vive no banco e não na memória.
+- **Backoff:** `base × 2^tentativas`, limitado a `PENDING_MAX_BACKOFF`, mais um jitter de até 10%, para que instâncias não sincronizem. A duplicação é feita com teto, sem deslocamento de bits, então não estoura com bases grandes (testado). Padrões: base 1s, teto 5m, 10 tentativas, TTL 30m.
+- **Acordar quando a referência chega:**
+  - Opções: (a) só backoff × (b) backoff + acordar.
+  - Decisão: **(b)**. Quando uma transação externa termina (`PROCESSED` ou `REJECTED`), na mesma transação SQL é feito `UPDATE ... SET next_attempt_at = agora WHERE id IN (SELECT ... WHERE status = 'PENDING_REFERENCE' AND provider_id = $1 AND reference_external_transaction_id = $2 FOR UPDATE SKIP LOCKED)`.
+  - Sem deadlock: o `ProcessWager` segura a carteira e **pula** pendências travadas; o worker segura a pendência e depois espera a carteira. Não há espera circular.
+  - Caso raro: se o worker estiver avaliando a pendência exatamente nesse instante, ela é pulada e resolvida no backoff seguinte.
+  - Também resolve **cadeias**: ROLLBACK que espera um REFUND, que espera uma BET. A BET acorda o REFUND; o REFUND, ao terminar, acorda o ROLLBACK (testado).
+- **`PENDING` sem referência nunca é confirmado:** as operações sem dependência são concluídas de forma síncrona na mesma transação (README §6.3: "sem commit intermediário de aceite"). Por isso o worker só busca `PENDING_REFERENCE`.
+- **Ciclo de vida:** `worker.PendingReferences` implementa `Loop` e roda no `Runner` genérico (D-007), com `PENDING_WORKERS` goroutines (2) e `PENDING_POLL_INTERVAL` (500ms) quando não há trabalho.
+  - Pode ser desligado com `ENABLE_REFERENCE_WORKER=false`, por exemplo para instâncias só de API.
+  - No shutdown, o contexto é cancelado: uma iteração em andamento é desfeita (**liberada**) e retomada depois por qualquer instância.
+  - A ordem verificada com SIGTERM no compose: worker → HTTP → SQS → pool.
+- **Contagem de tentativas:** `attempts` registra quantas vezes a pendência foi reagendada. Com `MAX_ATTEMPTS = N`, a N-ésima avaliação sem referência rejeita.
+- **Testes:**
+  - unitário: backoff exponencial, teto, jitter ≤ 10% e ausência de overflow;
+  - integração (`TestPendingReferences`, 3 instâncias):
+    - REFUND aplicado pelo worker depois da BET;
+    - sem a BET, continua pendente e as tentativas sobem;
+    - **acordar** torna a pendência elegível na hora, mesmo com backoff de 1h;
+    - expiração por tentativas e por TTL → `REFERENCE_NOT_FOUND` + evento;
+    - referência rejeitada → `REFERENCE_NOT_PROCESSED`;
+    - **cadeia** ROLLBACK → REFUND → BET;
+    - **9 workers em 3 instâncias** resolvendo 20 pendências: cada uma exatamente uma vez (20 créditos, saldo e ledger corretos);
+  - ponta a ponta (`TestWagerAPI`): com o worker real dentro da aplicação, um REFUND enviado antes da BET vira `PROCESSED` em cerca de 0,5s depois que a BET chega;
+  - `TestFxApp` com `goleak`: o worker para sem vazar goroutines.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

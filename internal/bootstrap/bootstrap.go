@@ -14,6 +14,7 @@ import (
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/postgres"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/sqsclient"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
+	"github.com/RobertoPSF/backend-challenge-go/internal/worker"
 )
 
 const (
@@ -36,5 +37,6 @@ func Options() fx.Option {
 		auth.Module,
 		app.Module,
 		httpapi.Module,
+		worker.Module,
 	)
 }

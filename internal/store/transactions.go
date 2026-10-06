@@ -97,9 +97,10 @@ type TransactionView struct {
 	Attempts      int
 	NextAttemptAt *time.Time
 	ExpiresAt     *time.Time
+	CorrelationID string
 }
 
-const viewColumns = transactionColumns + `, attempts, next_attempt_at, expires_at`
+const viewColumns = transactionColumns + `, attempts, next_attempt_at, expires_at, correlation_id`
 
 func (r TransactionRepo) GetView(ctx context.Context, id uuid.UUID) (TransactionView, error) {
 	return scanView(r.q.QueryRow(ctx, `SELECT `+viewColumns+` FROM wager_transactions WHERE id = $1`, id))
@@ -112,12 +113,39 @@ func (r TransactionRepo) FindViewByExternalID(ctx context.Context, providerID, e
 
 func scanView(row pgx.Row) (TransactionView, error) {
 	var v TransactionView
-	tx, err := scanTransaction(row, &v.Attempts, &v.NextAttemptAt, &v.ExpiresAt)
+	var correlationID *string
+	tx, err := scanTransaction(row, &v.Attempts, &v.NextAttemptAt, &v.ExpiresAt, &correlationID)
 	if err != nil {
 		return TransactionView{}, err
 	}
 	v.Transaction = tx
+	v.CorrelationID = deref(correlationID)
 	return v, nil
+}
+
+func (r TransactionRepo) ClaimDuePending(ctx context.Context, now time.Time) (TransactionView, error) {
+	return scanView(r.q.QueryRow(ctx, `SELECT `+viewColumns+` FROM wager_transactions
+		WHERE status = 'PENDING_REFERENCE' AND next_attempt_at <= $1
+		ORDER BY next_attempt_at
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, now))
+}
+
+func (r TransactionRepo) ReschedulePending(ctx context.Context, id uuid.UUID, attempts int, nextAttemptAt time.Time) error {
+	_, err := r.q.Exec(ctx,
+		`UPDATE wager_transactions SET attempts = $1, next_attempt_at = $2 WHERE id = $3`,
+		attempts, nextAttemptAt, id)
+	return err
+}
+
+func (r TransactionRepo) WakePending(ctx context.Context, providerID, referenceExternalID string, now time.Time) error {
+	_, err := r.q.Exec(ctx, `UPDATE wager_transactions SET next_attempt_at = $3
+		WHERE id IN (
+			SELECT id FROM wager_transactions
+			WHERE status = 'PENDING_REFERENCE' AND provider_id = $1 AND reference_external_transaction_id = $2
+			FOR UPDATE SKIP LOCKED)`,
+		providerID, referenceExternalID, now)
+	return err
 }
 
 func (r TransactionRepo) FindByIdempotencyKey(ctx context.Context, providerID, key string) (*domain.WagerTransaction, error) {

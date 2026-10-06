@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
@@ -169,7 +170,63 @@ func (s *Wagers) save(ctx context.Context, r *store.Repos, tx *domain.WagerTrans
 	if err := r.Transactions.Update(ctx, tx); err != nil {
 		return err
 	}
-	return r.Outbox.Insert(ctx, events...)
+	if err := r.Outbox.Insert(ctx, events...); err != nil {
+		return err
+	}
+	if ext := tx.Snapshot().External; ext != nil && tx.Status().IsTerminal() {
+		return r.Transactions.WakePending(ctx, ext.ProviderID, ext.ExternalTransactionID, s.now())
+	}
+	return nil
+}
+
+func (s *Wagers) ResumeNextPending(ctx context.Context) (bool, error) {
+	found := false
+	err := s.store.InTx(ctx, func(r *store.Repos) error {
+		now := s.now()
+		view, err := r.Transactions.ClaimDuePending(ctx, now)
+		if errors.Is(err, store.ErrNotFound) {
+			found = false
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+
+		tx := view.Transaction
+		eventCtx := domain.EventContext{CorrelationID: view.CorrelationID, CausationID: tx.ID().String(), OccurredAt: now}
+		if eventCtx.CorrelationID == "" {
+			eventCtx.CorrelationID = tx.ID().String()
+		}
+
+		ref, err := s.findReference(ctx, r, tx)
+		if err != nil {
+			return err
+		}
+		if ref != nil && ref.Status().IsTerminal() {
+			return s.settle(ctx, r, tx, eventCtx)
+		}
+
+		attempts := view.Attempts + 1
+		if attempts >= s.pending.MaxAttempts || (view.ExpiresAt != nil && !now.Before(*view.ExpiresAt)) {
+			wallet, err := r.Wallets.GetForUpdate(ctx, tx.WalletID())
+			if err != nil {
+				return err
+			}
+			return s.reject(ctx, r, tx, domain.ErrReferenceNotFound.Code, wallet, eventCtx)
+		}
+		return r.Transactions.ReschedulePending(ctx, tx.ID(), attempts, now.Add(s.backoff(attempts)))
+	})
+	return found, err
+}
+
+func (s *Wagers) backoff(attempts int) time.Duration {
+	delay := s.pending.BaseBackoff
+	for i := 0; i < attempts && delay < s.pending.MaxBackoff; i++ {
+		delay *= 2
+	}
+	delay = min(delay, s.pending.MaxBackoff)
+	return delay + time.Duration(rand.Int64N(int64(delay)/10+1))
 }
 
 func (s *Wagers) newTransaction(req domain.WagerRequest) (*domain.WagerTransaction, error) {

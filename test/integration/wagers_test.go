@@ -33,12 +33,17 @@ type wagerEnv struct {
 
 func newWagerEnv(t *testing.T, instances int) wagerEnv {
 	t.Helper()
+	return newWagerEnvWith(t, instances, pendingConfig)
+}
+
+func newWagerEnvWith(t *testing.T, instances int, cfg config.Config) wagerEnv {
+	t.Helper()
 	pg := testinfra.StartPostgres(t)
 	env := wagerEnv{db: connect(t, pg.OwnerURL)}
 	for range instances {
 		se := newStoreOn(t, pg.AppURL, 5*time.Second)
 		env.envs = append(env.envs, se)
-		env.instances = append(env.instances, app.NewWagers(se.store, pendingConfig))
+		env.instances = append(env.instances, app.NewWagers(se.store, cfg))
 	}
 	env.wallets = app.NewWallets(env.envs[0].store)
 	return env

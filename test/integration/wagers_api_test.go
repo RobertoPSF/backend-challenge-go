@@ -5,6 +5,7 @@ package integration
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -103,6 +104,34 @@ func TestWagerAPI(t *testing.T) {
 		if view.Status != http.StatusOK || view.Body["status"] != "PENDING_REFERENCE" || view.Body["nextAttemptAt"] == nil ||
 			view.Body["expiresAt"] == nil || view.Body["referenceExternalTransactionId"] != "bet-not-yet" {
 			t.Fatalf("view = %d %s", view.Status, view.Raw)
+		}
+	})
+
+	t.Run("the running worker resolves a pending REFUND once its BET arrives", func(t *testing.T) {
+		w := openAPIWallet(t, a, admin, "100.00")
+		bet := ext()
+		pending := submit(t, a, providerA, "provider-a", w, "REFUND", "30.00", ext(), bet)
+		if pending.Status != http.StatusAccepted {
+			t.Fatalf("refund = %d %s", pending.Status, pending.Raw)
+		}
+		if res := submit(t, a, providerA, "provider-a", w, "BET", "30.00", bet, ""); res.Status != http.StatusCreated {
+			t.Fatalf("bet = %d %s", res.Status, res.Raw)
+		}
+
+		location := a.BaseURL + pending.Header.Get("Location")
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			view := doRequest(t, http.MethodGet, location, providerA, nil, nil)
+			if view.Body["status"] == "PROCESSED" {
+				if balanceOf(view) != "100.00" {
+					t.Errorf("balance after refund = %s, want 100.00", balanceOf(view))
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("refund still %v after 10s", view.Body["status"])
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 	})
 
