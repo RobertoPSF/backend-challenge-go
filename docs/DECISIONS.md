@@ -436,6 +436,48 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
     - em todos os casos, saldo armazenado = créditos − débitos do ledger.
   - O bloco de concorrência rodou 5× seguidas com `-race`, sem falha.
 
+## D-025 — Referências, reversões e espera por referência (etapa 2.3)
+
+- **WIN com referência ainda indisponível:**
+  - Opções: (a) esperar em `PENDING_REFERENCE` × (b) recusar na hora × (c) creditar sem validar.
+  - Decisão: **(a)**. A WIN que informa `referenceExternalTransactionId` segue a mesma regra das reversões: só é creditada depois que a BET existe e é validada. Com entrega fora de ordem, (b) recusaria definitivamente uma WIN legítima, e (c) pagaria sem validar.
+  - Custo: o crédito atrasa até a BET chegar. Uma WIN **sem** referência continua sendo creditada imediatamente.
+- **Resolução da referência:** por `(providerId do operador, referenceExternalTransactionId)`. O escopo é sempre o próprio provedor, então a referência a uma transação de outro provedor não é encontrada e fica pendente até expirar (testado).
+
+  | Estado da referência | Resultado |
+  | --- | --- |
+  | não existe | `PENDING_REFERENCE` + `next_attempt_at = agora + PENDING_BASE_BACKOFF`, `expires_at = agora + PENDING_TTL` + evento `WagerTransactionPendingReference`; nenhum lock de carteira, nenhum movimento |
+  | `PENDING` / `PENDING_REFERENCE` | também espera (`PENDING_REFERENCE`) |
+  | `REJECTED` / `FAILED` | `REJECTED REFERENCE_NOT_PROCESSED` (definitivo) |
+  | `PROCESSED` | valida e aplica |
+
+- **Validações** (`domain.ApplyToWallet`, depois do lock da carteira):
+  - provedor, jogador, carteira, moeda e **rodada** iguais aos da referência → senão `REFERENCE_MISMATCH`;
+  - WIN só pode referenciar uma BET (`REFERENCE_MISMATCH`), e o valor da WIN é livre;
+  - reversões: valor **igual** ao da referência (`AMOUNT_MISMATCH`), sem reversão parcial (README §7).
+- **Matriz de reversões:**
+
+  | Operação | Referência | Movimento | Sem saldo |
+  | --- | --- | --- | --- |
+  | REFUND | BET | crédito | — |
+  | REFUND | WIN, REFUND, ROLLBACK, LOSS | `REFERENCE_KIND_NOT_REVERSIBLE` | — |
+  | ROLLBACK | BET | crédito | — |
+  | ROLLBACK | WIN | débito | `REVERSAL_INSUFFICIENT_FUNDS` |
+  | ROLLBACK | REFUND | débito | `REVERSAL_INSUFFICIENT_FUNDS` |
+  | ROLLBACK | ROLLBACK, LOSS | `REFERENCE_KIND_NOT_REVERSIBLE` | — |
+
+  `REVERSAL_INSUFFICIENT_FUNDS` é diferente do `INSUFFICIENT_FUNDS` da aposta (README §7), e a rejeição é auditável: fica gravada com o saldo observado e gera evento.
+- **Reversão única (D-003):** com a carteira travada, `HasSuccessfulReversal(ref)` → `ALREADY_REVERSED`. Todas as reversões de uma referência são da **mesma carteira**, então o lock as serializa.
+  - Barreira final no banco: `wt_single_successful_reversal_uk`. Se mesmo assim ocorrer a violação, o store a converte em `ErrConcurrentUpdate`, e o `InTx` refaz a operação, que então vê `ALREADY_REVERSED`.
+  - Combinações: BET → REFUND → ROLLBACK(REFUND) → novo REFUND da BET = `ALREADY_REVERSED`. A reversão da BET fica "consumida" e o débito nunca é devolvido duas vezes (testado).
+- **Banco:** a migration `000006` troca `wt_processed_reversal_has_resolved_reference_ck` por `wt_processed_reference_is_resolved_ck`: **qualquer** transação `PROCESSED` com `reference_external_transaction_id` precisa de `reference_transaction_id`, o que inclui a WIN. É uma migration nova, sem editar a `000002`, para não divergir de bancos já migrados. Upgrade testado: o compose aplicou a `000006` sobre um banco existente.
+- **Estrutura do código:** `ProcessWager` = inserção idempotente + `settle`. O `settle` (resolver referência → travar carteira → aplicar → persistir) será reutilizado pelo worker de pendências (etapa 2.5). Se a transação já está `PENDING_REFERENCE` e a referência continua ausente, `settle` não faz nada, e o worker cuida do reagendamento.
+- **Configuração:** `PENDING_BASE_BACKOFF` (1s), `PENDING_MAX_BACKOFF` (5m), `PENDING_MAX_ATTEMPTS` (10) e `PENDING_TTL` (30m), validadas no boot. O backoff e a expiração são aplicados na etapa 2.5.
+- **Testes:**
+  - unitários: 5 movimentos válidos e 13 rejeições (tipo, valor, reversão já feita, sem saldo, referência rejeitada, rodada, carteira, jogador e provedor diferentes);
+  - integração (`TestProcessWager_References`): REFUND, reversão única, ROLLBACK de REFUND, `REVERSAL_INSUFFICIENT_FUNDS`, validações, WIN com referência, espera (REFUND, ROLLBACK e WIN) com agendamento e evento, replay de pendente, isolamento entre provedores;
+  - **concorrência:** REFUND + ROLLBACK + REFUND da mesma BET em paralelo, por 3 instâncias, repetido 10× → sempre **exatamente uma** reversão bem-sucedida e o saldo correto. O bloco rodou 5× seguidas com `-race`.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

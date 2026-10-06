@@ -21,6 +21,14 @@ type Config struct {
 	Database   Database
 	AWS        AWS
 	OIDC       OIDC
+	Pending    Pending
+}
+
+type Pending struct {
+	BaseBackoff time.Duration `env:"PENDING_BASE_BACKOFF" envDefault:"1s"`
+	MaxBackoff  time.Duration `env:"PENDING_MAX_BACKOFF" envDefault:"5m"`
+	MaxAttempts int           `env:"PENDING_MAX_ATTEMPTS" envDefault:"10"`
+	TTL         time.Duration `env:"PENDING_TTL" envDefault:"30m"`
 }
 
 type OIDC struct {
@@ -67,6 +75,9 @@ func (c Config) Validate() error {
 	}
 	if c.Database.LockTimeout >= c.Database.StatementTimeout {
 		errs = append(errs, errors.New("DB_LOCK_TIMEOUT must be lower than DB_STATEMENT_TIMEOUT"))
+	}
+	if c.Pending.BaseBackoff <= 0 || c.Pending.MaxBackoff < c.Pending.BaseBackoff || c.Pending.MaxAttempts < 1 || c.Pending.TTL <= 0 {
+		errs = append(errs, errors.New("PENDING_* settings must be positive and PENDING_MAX_BACKOFF >= PENDING_BASE_BACKOFF"))
 	}
 	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.AWS.InputQueue, "SQS_EVENTS_QUEUE": c.AWS.EventsQueue} {
 		if !strings.HasSuffix(queue, ".fifo") {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,8 +16,13 @@ import (
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/app"
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
 	"github.com/RobertoPSF/backend-challenge-go/test/testinfra"
 )
+
+var pendingConfig = config.Config{Pending: config.Pending{
+	BaseBackoff: time.Second, MaxBackoff: time.Minute, MaxAttempts: 5, TTL: time.Hour,
+}}
 
 type wagerEnv struct {
 	instances []*app.Wagers
@@ -32,7 +38,7 @@ func newWagerEnv(t *testing.T, instances int) wagerEnv {
 	for range instances {
 		se := newStoreOn(t, pg.AppURL, 5*time.Second)
 		env.envs = append(env.envs, se)
-		env.instances = append(env.instances, app.NewWagers(se.store))
+		env.instances = append(env.instances, app.NewWagers(se.store, pendingConfig))
 	}
 	env.wallets = app.NewWallets(env.envs[0].store)
 	return env
@@ -49,8 +55,14 @@ func (e wagerEnv) openWallet(t *testing.T, amount string) *domain.Wallet {
 
 func wagerCmd(t *testing.T, w *domain.Wallet, kind, amount, externalID string) app.WagerCommand {
 	t.Helper()
+	return refCmd(t, w, kind, amount, externalID, "")
+}
+
+func refCmd(t *testing.T, w *domain.Wallet, kind, amount, externalID, reference string) app.WagerCommand {
+	t.Helper()
 	in := domain.WagerRequestInput{
-		ProviderID: "provider-a", ExternalTransactionID: externalID,
+		ReferenceExternalTransactionID: reference,
+		ProviderID:                     "provider-a", ExternalTransactionID: externalID,
 		PlayerID: w.PlayerID().String(), WalletID: w.ID().String(),
 		RoundID: "round-1", GameID: "game-1", Kind: kind,
 		Money: &domain.MoneyInput{Amount: amount, Currency: w.Currency().String()},
@@ -393,4 +405,184 @@ func runParallel(t *testing.T, n int, fn func(i int) (app.WagerResult, error)) [
 	close(start)
 	wg.Wait()
 	return results
+}
+
+func (e wagerEnv) process(t *testing.T, cmd app.WagerCommand) domain.WagerTransactionSnapshot {
+	t.Helper()
+	res, err := e.instances[0].Process(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("process %s: %v", cmd.Request.ExternalTransactionID, err)
+	}
+	return res.Transaction.Snapshot()
+}
+
+func expectStatus(t *testing.T, s domain.WagerTransactionSnapshot, status domain.Status, code domain.FailureCode) {
+	t.Helper()
+	if s.Status != status || s.FailureCode != code {
+		t.Fatalf("%s %s = %s %s, want %s %s", s.Kind, s.External.ExternalTransactionID, s.Status, s.FailureCode, status, code)
+	}
+}
+
+func TestProcessWager_References(t *testing.T) {
+	env := newWagerEnv(t, 3)
+	id := func(prefix string) string { return prefix + "-" + uuid.NewString() }
+
+	t.Run("REFUND of a processed BET credits it back and keeps the reference", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet")))
+		refund := env.process(t, refCmd(t, w, "REFUND", "30.00", id("refund"), bet.External.ExternalTransactionID))
+		expectStatus(t, refund, domain.StatusProcessed, "")
+		if refund.BalanceAfter.String() != "100.00" || refund.ReferenceTransactionID == nil || *refund.ReferenceTransactionID != bet.ID {
+			t.Fatalf("refund = %+v", refund)
+		}
+		env.assertLedgerMatchesBalance(t, w.ID())
+	})
+
+	t.Run("a BET accepts a single successful reversal", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet")))
+		ref := bet.External.ExternalTransactionID
+		expectStatus(t, env.process(t, refCmd(t, w, "REFUND", "30.00", id("refund"), ref)), domain.StatusProcessed, "")
+		expectStatus(t, env.process(t, refCmd(t, w, "REFUND", "30.00", id("refund"), ref)), domain.StatusRejected, "ALREADY_REVERSED")
+		expectStatus(t, env.process(t, refCmd(t, w, "ROLLBACK", "30.00", id("rollback"), ref)), domain.StatusRejected, "ALREADY_REVERSED")
+		if balance, _ := env.walletState(t, w.ID()); balance != 10000 {
+			t.Errorf("balance = %d, want 10000 (refunded once)", balance)
+		}
+		env.assertLedgerMatchesBalance(t, w.ID())
+	})
+
+	t.Run("ROLLBACK of a REFUND debits again and the BET stays reversed", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet")))
+		refund := env.process(t, refCmd(t, w, "REFUND", "30.00", id("refund"), bet.External.ExternalTransactionID))
+		rollback := env.process(t, refCmd(t, w, "ROLLBACK", "30.00", id("rollback"), refund.External.ExternalTransactionID))
+		expectStatus(t, rollback, domain.StatusProcessed, "")
+		if rollback.BalanceAfter.String() != "70.00" {
+			t.Errorf("balance after rollback = %s, want 70.00", rollback.BalanceAfter)
+		}
+		expectStatus(t, env.process(t, refCmd(t, w, "REFUND", "30.00", id("refund"), bet.External.ExternalTransactionID)),
+			domain.StatusRejected, "ALREADY_REVERSED")
+		env.assertLedgerMatchesBalance(t, w.ID())
+	})
+
+	t.Run("ROLLBACK of a WIN without funds is rejected with its own code", func(t *testing.T) {
+		w := env.openWallet(t, "0.00")
+		win := env.process(t, wagerCmd(t, w, "WIN", "50.00", id("win")))
+		expectStatus(t, env.process(t, wagerCmd(t, w, "BET", "40.00", id("bet"))), domain.StatusProcessed, "")
+		rollback := env.process(t, refCmd(t, w, "ROLLBACK", "50.00", id("rollback"), win.External.ExternalTransactionID))
+		expectStatus(t, rollback, domain.StatusRejected, "REVERSAL_INSUFFICIENT_FUNDS")
+		if rollback.BalanceAfter.String() != "10.00" {
+			t.Errorf("observed balance = %s, want 10.00", rollback.BalanceAfter)
+		}
+		expectStatus(t, env.process(t, wagerCmd(t, w, "BET", "40.00", id("bet"))), domain.StatusRejected, "INSUFFICIENT_FUNDS")
+	})
+
+	t.Run("reference validation", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		other := env.openWallet(t, "100.00")
+		bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet"))).External.ExternalTransactionID
+		rejectedBet := env.process(t, wagerCmd(t, w, "BET", "500.00", id("bet"))).External.ExternalTransactionID
+		win := env.process(t, wagerCmd(t, w, "WIN", "5.00", id("win"))).External.ExternalTransactionID
+
+		otherRound := refCmd(t, w, "REFUND", "30.00", id("refund"), bet)
+		otherRound.Request.RoundID = "round-2"
+		otherWallet := refCmd(t, other, "REFUND", "30.00", id("refund"), bet)
+
+		cases := map[string]struct {
+			cmd  app.WagerCommand
+			code domain.FailureCode
+		}{
+			"partial refund":             {refCmd(t, w, "REFUND", "10.00", id("refund"), bet), "AMOUNT_MISMATCH"},
+			"refund of a WIN":            {refCmd(t, w, "REFUND", "5.00", id("refund"), win), "REFERENCE_KIND_NOT_REVERSIBLE"},
+			"reversal of a rejected BET": {refCmd(t, w, "REFUND", "500.00", id("refund"), rejectedBet), "REFERENCE_NOT_PROCESSED"},
+			"different round":            {otherRound, "REFERENCE_MISMATCH"},
+			"different wallet":           {otherWallet, "REFERENCE_MISMATCH"},
+			"WIN referencing a WIN":      {refCmd(t, w, "WIN", "5.00", id("win"), win), "REFERENCE_MISMATCH"},
+		}
+		for name, tc := range cases {
+			t.Run(name, func(t *testing.T) {
+				expectStatus(t, env.process(t, tc.cmd), domain.StatusRejected, tc.code)
+			})
+		}
+		env.assertLedgerMatchesBalance(t, w.ID())
+	})
+
+	t.Run("WIN referencing a BET of the same round is credited with the reference", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet")))
+		win := env.process(t, refCmd(t, w, "WIN", "90.00", id("win"), bet.External.ExternalTransactionID))
+		expectStatus(t, win, domain.StatusProcessed, "")
+		if win.BalanceAfter.String() != "160.00" || *win.ReferenceTransactionID != bet.ID {
+			t.Errorf("win = %+v", win)
+		}
+	})
+
+	t.Run("reference not yet available waits as PENDING_REFERENCE", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		for _, kind := range []string{"REFUND", "ROLLBACK", "WIN"} {
+			pending := env.process(t, refCmd(t, w, kind, "30.00", id(strings.ToLower(kind)), "bet-not-yet-"+uuid.NewString()))
+			expectStatus(t, pending, domain.StatusPendingReference, "")
+			var next, expires *time.Time
+			_ = env.db.QueryRow(context.Background(), `SELECT next_attempt_at, expires_at FROM wager_transactions WHERE id = $1`, pending.ID).Scan(&next, &expires)
+			if next == nil || expires == nil || !expires.After(*next) {
+				t.Errorf("%s schedule next=%v expires=%v", kind, next, expires)
+			}
+			if n := count(t, env.db, `SELECT count(*) FROM outbox_events WHERE event_type = 'WagerTransactionPendingReference' AND payload->'data'->>'transactionId' = $1::text`, pending.ID); n != 1 {
+				t.Errorf("%s pending events = %d", kind, n)
+			}
+		}
+		if balance, version := env.walletState(t, w.ID()); balance != 10000 || version != 1 {
+			t.Errorf("wallet changed while waiting: %d v%d", balance, version)
+		}
+
+		cmd := refCmd(t, w, "REFUND", "30.00", id("refund"), "bet-still-missing")
+		env.process(t, cmd)
+		again, err := env.instances[1].Process(context.Background(), cmd)
+		if err != nil || !again.Replay || again.Transaction.Status() != domain.StatusPendingReference {
+			t.Errorf("replay of pending = %+v, %v", again, err)
+		}
+	})
+
+	t.Run("references are resolved only within the same provider", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet")))
+		fromOtherProvider := refCmd(t, w, "REFUND", "30.00", id("refund"), bet.External.ExternalTransactionID)
+		fromOtherProvider.Request.ProviderID = "provider-b"
+		expectStatus(t, env.process(t, fromOtherProvider), domain.StatusPendingReference, "")
+	})
+
+	t.Run("concurrent REFUND and ROLLBACK of the same BET: exactly one succeeds", func(t *testing.T) {
+		for round := range 10 {
+			w := env.openWallet(t, "100.00")
+			bet := env.process(t, wagerCmd(t, w, "BET", "30.00", id("bet"))).External.ExternalTransactionID
+			cmds := []app.WagerCommand{
+				refCmd(t, w, "REFUND", "30.00", id("refund"), bet),
+				refCmd(t, w, "ROLLBACK", "30.00", id("rollback"), bet),
+				refCmd(t, w, "REFUND", "30.00", id("refund"), bet),
+			}
+			results := runParallel(t, len(cmds), func(i int) (app.WagerResult, error) {
+				return env.instances[i%3].Process(context.Background(), cmds[i])
+			})
+			processed := 0
+			for _, r := range results {
+				if r.err != nil {
+					t.Fatalf("round %d: %v", round, r.err)
+				}
+				s := r.res.Transaction.Snapshot()
+				switch {
+				case s.Status == domain.StatusProcessed:
+					processed++
+				case s.FailureCode != "ALREADY_REVERSED":
+					t.Errorf("round %d: unexpected %s %s", round, s.Status, s.FailureCode)
+				}
+			}
+			if processed != 1 {
+				t.Fatalf("round %d: %d successful reversals, want 1", round, processed)
+			}
+			if balance, _ := env.walletState(t, w.ID()); balance != 10000 {
+				t.Fatalf("round %d: balance = %d, want 10000", round, balance)
+			}
+			env.assertLedgerMatchesBalance(t, w.ID())
+		}
+	})
 }

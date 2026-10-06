@@ -65,6 +65,9 @@ func (r TransactionRepo) Update(ctx context.Context, t *domain.WagerTransaction)
 		WHERE id = $8`,
 		s.Status, nullIfEmpty(string(s.FailureCode)), balanceAfter, balanceCurrency,
 		s.ReferenceTransactionID, s.UpdatedAt, s.ProcessedAt, s.ID)
+	if isUniqueViolation(err, "wt_single_successful_reversal_uk") {
+		return ErrConcurrentUpdate
+	}
 	if err != nil {
 		return err
 	}
@@ -72,6 +75,21 @@ func (r TransactionRepo) Update(ctx context.Context, t *domain.WagerTransaction)
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (r TransactionRepo) SchedulePending(ctx context.Context, id uuid.UUID, nextAttemptAt, expiresAt time.Time) error {
+	_, err := r.q.Exec(ctx,
+		`UPDATE wager_transactions SET next_attempt_at = $1, expires_at = $2 WHERE id = $3`,
+		nextAttemptAt, expiresAt, id)
+	return err
+}
+
+func (r TransactionRepo) HasSuccessfulReversal(ctx context.Context, referenceID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM wager_transactions
+		WHERE reference_transaction_id = $1 AND status = 'PROCESSED' AND kind IN ('REFUND', 'ROLLBACK'))`,
+		referenceID).Scan(&exists)
+	return exists, err
 }
 
 func (r TransactionRepo) FindByIdempotencyKey(ctx context.Context, providerID, key string) (*domain.WagerTransaction, error) {

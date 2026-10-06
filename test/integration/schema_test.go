@@ -185,7 +185,9 @@ func TestSchema_Invariants(t *testing.T) {
 		}
 		expectViolation(t, insert(app, "wager_transactions", txRow(w, map[string]any{"kind": "BET", "reference_external_transaction_id": "x"})),
 			pgCheckViolation, "wt_bet_loss_have_no_reference_ck")
-		mustExec(t, insert(app, "wager_transactions", txRow(w, map[string]any{"kind": "WIN", "reference_external_transaction_id": "x"})))
+		bet := newTransaction(t, app, w, nil)
+		mustExec(t, insert(app, "wager_transactions", txRow(w, map[string]any{
+			"kind": "WIN", "reference_external_transaction_id": "x", "reference_transaction_id": bet})))
 	})
 
 	t.Run("concluded transactions carry their outcome", func(t *testing.T) {
@@ -249,10 +251,13 @@ func TestSchema_Invariants(t *testing.T) {
 		mustExec(t, insert(app, "wager_transactions", rejected))
 	})
 
-	t.Run("processed reversal requires the resolved reference", func(t *testing.T) {
+	t.Run("processed operation with a reference requires the resolved reference", func(t *testing.T) {
 		w := newWallet(t, app)
-		row := txRow(w, map[string]any{"kind": "ROLLBACK", "reference_external_transaction_id": "bet"})
-		expectViolation(t, insert(app, "wager_transactions", row), pgCheckViolation, "wt_processed_reversal_has_resolved_reference_ck")
+		for _, kind := range []string{"ROLLBACK", "REFUND", "WIN"} {
+			row := txRow(w, map[string]any{"kind": kind, "reference_external_transaction_id": "bet"})
+			expectViolation(t, insert(app, "wager_transactions", row), pgCheckViolation, "wt_processed_reference_is_resolved_ck")
+		}
+		mustExec(t, insert(app, "wager_transactions", txRow(w, map[string]any{"kind": "WIN"})))
 	})
 
 	t.Run("inbox is unique per consumer and message", func(t *testing.T) {

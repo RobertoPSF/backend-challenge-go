@@ -136,7 +136,7 @@ func (t *WagerTransaction) MarkProcessed(balanceAfter Money, referenceTransactio
 	if !balanceAfter.IsValid() || balanceAfter.IsNegative() || balanceAfter.Currency() != t.s.Money.Currency() {
 		return fmt.Errorf("%w: invalid balance after processing", ErrInvalidTransition)
 	}
-	if t.s.Kind.IsReversal() && referenceTransactionID == nil {
+	if t.HasReference() && referenceTransactionID == nil {
 		return fmt.Errorf("%w: %s requires the resolved reference", ErrInvalidTransition, t.s.Kind)
 	}
 	t.s.BalanceAfter = &balanceAfter
@@ -170,8 +170,8 @@ func (t *WagerTransaction) MarkPendingReference(now time.Time) error {
 	if err := t.transition(StatusPendingReference, StatusPending); err != nil {
 		return err
 	}
-	if !t.s.Kind.IsReversal() {
-		return fmt.Errorf("%w: only reversals wait for a reference", ErrInvalidTransition)
+	if !t.HasReference() {
+		return fmt.Errorf("%w: only operations with a reference can wait for it", ErrInvalidTransition)
 	}
 	t.s.Status = StatusPendingReference
 	t.s.UpdatedAt = normalizeTime(now)
@@ -319,3 +319,7 @@ func (t *WagerTransaction) WalletID() uuid.UUID { return t.s.WalletID }
 func (t *WagerTransaction) PlayerID() uuid.UUID { return t.s.PlayerID }
 func (t *WagerTransaction) Money() Money        { return t.s.Money }
 func (t *WagerTransaction) IsExternal() bool    { return t.s.External != nil }
+
+func (t *WagerTransaction) HasReference() bool {
+	return t.s.External != nil && t.s.External.ReferenceExternalTransactionID != ""
+}

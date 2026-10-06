@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 )
 
@@ -22,12 +25,13 @@ type WagerResult struct {
 }
 
 type Wagers struct {
-	store *store.Store
-	now   func() time.Time
+	store   *store.Store
+	pending config.Pending
+	now     func() time.Time
 }
 
-func NewWagers(st *store.Store) *Wagers {
-	return &Wagers{store: st, now: time.Now}
+func NewWagers(st *store.Store, cfg config.Config) *Wagers {
+	return &Wagers{store: st, pending: cfg.Pending, now: time.Now}
 }
 
 func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, error) {
@@ -37,9 +41,20 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 
 	var result WagerResult
 	err := s.store.InTx(ctx, func(r *store.Repos) error {
-		var err error
-		result, err = s.process(ctx, r, cmd)
-		return err
+		tx, err := s.newTransaction(cmd.Request)
+		if err != nil {
+			return err
+		}
+		inserted, err := r.Transactions.InsertIfAbsent(ctx, tx, cmd.CorrelationID)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			result, err = s.replay(ctx, r, cmd.Request)
+			return err
+		}
+		result = WagerResult{Transaction: tx}
+		return s.settle(ctx, r, tx, s.eventContext(cmd.CorrelationID, cmd.CausationID))
 	})
 	if err != nil {
 		return WagerResult{}, err
@@ -47,81 +62,122 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 	return result, nil
 }
 
-func (s *Wagers) process(ctx context.Context, r *store.Repos, cmd WagerCommand) (WagerResult, error) {
-	tx, err := s.newTransaction(cmd.Request)
-	if err != nil {
-		return WagerResult{}, err
-	}
-
-	inserted, err := r.Transactions.InsertIfAbsent(ctx, tx, cmd.CorrelationID)
-	if err != nil {
-		return WagerResult{}, err
-	}
-	if !inserted {
-		return s.replay(ctx, r, cmd.Request)
+func (s *Wagers) settle(ctx context.Context, r *store.Repos, tx *domain.WagerTransaction, eventCtx domain.EventContext) error {
+	var ref *domain.WagerTransaction
+	if tx.HasReference() {
+		var err error
+		ref, err = s.findReference(ctx, r, tx)
+		if err != nil {
+			return err
+		}
+		if ref == nil || !ref.Status().IsTerminal() {
+			return s.waitForReference(ctx, r, tx, eventCtx)
+		}
 	}
 
 	wallet, err := r.Wallets.GetForUpdate(ctx, tx.WalletID())
 	if err != nil {
-		return WagerResult{}, err
+		return err
 	}
+	alreadyReversed := false
+	if tx.Kind().IsReversal() && ref.Status() == domain.StatusProcessed {
+		if alreadyReversed, err = r.Transactions.HasSuccessfulReversal(ctx, ref.ID()); err != nil {
+			return err
+		}
+	}
+
 	expectedVersion := wallet.Version()
-	now := s.now()
-	eventCtx := domain.EventContext{CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID, OccurredAt: now}
-
-	var events []domain.Event
-	entry, err := domain.ApplyToWallet(wallet, tx, now)
-	switch {
-	case isBusinessRejection(err):
-		if err := tx.MarkRejected(failureCode(err), wallet.Balance(), now); err != nil {
-			return WagerResult{}, err
-		}
-		rejected, err := domain.NewWagerTransactionRejected(tx, eventCtx)
-		if err != nil {
-			return WagerResult{}, err
-		}
-		events = append(events, rejected)
-
-	case err != nil:
-		return WagerResult{}, err
-
-	default:
-		if entry != nil {
-			if err := r.Ledger.Insert(ctx, *entry); err != nil {
-				return WagerResult{}, err
-			}
-			if err := r.Wallets.UpdateBalance(ctx, wallet, expectedVersion); err != nil {
-				return WagerResult{}, err
-			}
-		}
-		if err := tx.MarkProcessed(wallet.Balance(), nil, now); err != nil {
-			return WagerResult{}, err
-		}
-		processed, err := domain.NewWagerTransactionProcessed(tx, eventCtx)
-		if err != nil {
-			return WagerResult{}, err
-		}
-		events = append(events, processed)
-		if entry != nil {
-			changed, err := domain.NewWalletBalanceChanged(*entry, wallet.Version(), eventCtx)
-			if err != nil {
-				return WagerResult{}, err
-			}
-			events = append(events, changed)
-		}
+	entry, err := domain.ApplyToWallet(wallet, tx, ref, alreadyReversed, eventCtx.OccurredAt)
+	if isBusinessRejection(err) {
+		return s.reject(ctx, r, tx, failureCode(err), wallet, eventCtx)
+	}
+	if err != nil {
+		return err
 	}
 
+	events := []domain.Event{}
+	if entry != nil {
+		if err := r.Ledger.Insert(ctx, *entry); err != nil {
+			return err
+		}
+		if err := r.Wallets.UpdateBalance(ctx, wallet, expectedVersion); err != nil {
+			return err
+		}
+	}
+	var refID *uuid.UUID
+	if ref != nil {
+		id := ref.ID()
+		refID = &id
+	}
+	if err := tx.MarkProcessed(wallet.Balance(), refID, eventCtx.OccurredAt); err != nil {
+		return err
+	}
+	processed, err := domain.NewWagerTransactionProcessed(tx, eventCtx)
+	if err != nil {
+		return err
+	}
+	events = append(events, processed)
+	if entry != nil {
+		changed, err := domain.NewWalletBalanceChanged(*entry, wallet.Version(), eventCtx)
+		if err != nil {
+			return err
+		}
+		events = append(events, changed)
+	}
+	return s.save(ctx, r, tx, events...)
+}
+
+func (s *Wagers) findReference(ctx context.Context, r *store.Repos, tx *domain.WagerTransaction) (*domain.WagerTransaction, error) {
+	ext := tx.Snapshot().External
+	ref, err := r.Transactions.FindByExternalID(ctx, ext.ProviderID, ext.ReferenceExternalTransactionID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	return ref, err
+}
+
+func (s *Wagers) waitForReference(ctx context.Context, r *store.Repos, tx *domain.WagerTransaction, eventCtx domain.EventContext) error {
+	if tx.Status() == domain.StatusPendingReference {
+		return nil
+	}
+	now := eventCtx.OccurredAt
+	if err := tx.MarkPendingReference(now); err != nil {
+		return err
+	}
+	pending, err := domain.NewWagerTransactionPendingReference(tx, eventCtx)
+	if err != nil {
+		return err
+	}
+	if err := s.save(ctx, r, tx, pending); err != nil {
+		return err
+	}
+	return r.Transactions.SchedulePending(ctx, tx.ID(), now.Add(s.pending.BaseBackoff), now.Add(s.pending.TTL))
+}
+
+func (s *Wagers) reject(ctx context.Context, r *store.Repos, tx *domain.WagerTransaction, code domain.FailureCode, wallet *domain.Wallet, eventCtx domain.EventContext) error {
+	if err := tx.MarkRejected(code, wallet.Balance(), eventCtx.OccurredAt); err != nil {
+		return err
+	}
+	rejected, err := domain.NewWagerTransactionRejected(tx, eventCtx)
+	if err != nil {
+		return err
+	}
+	return s.save(ctx, r, tx, rejected)
+}
+
+func (s *Wagers) save(ctx context.Context, r *store.Repos, tx *domain.WagerTransaction, events ...domain.Event) error {
 	if err := r.Transactions.Update(ctx, tx); err != nil {
-		return WagerResult{}, err
+		return err
 	}
-	if err := r.Outbox.Insert(ctx, events...); err != nil {
-		return WagerResult{}, err
-	}
-	return WagerResult{Transaction: tx}, nil
+	return r.Outbox.Insert(ctx, events...)
 }
 
 func (s *Wagers) newTransaction(req domain.WagerRequest) (*domain.WagerTransaction, error) {
 	return domain.NewExternalTransaction(req.Kind, req.WalletID, req.PlayerID, req.Money, req.ExternalDetails(), s.now())
+}
+
+func (s *Wagers) eventContext(correlationID, causationID string) domain.EventContext {
+	return domain.EventContext{CorrelationID: correlationID, CausationID: causationID, OccurredAt: s.now()}
 }
 
 func (s *Wagers) replay(ctx context.Context, r *store.Repos, req domain.WagerRequest) (WagerResult, error) {

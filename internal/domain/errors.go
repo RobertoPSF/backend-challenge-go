@@ -40,7 +40,15 @@ var (
 	ErrCurrencyMismatch     = newError(KindBusiness, "CURRENCY_MISMATCH", "currencies do not match")
 	ErrInsufficientFunds    = newError(KindBusiness, "INSUFFICIENT_FUNDS", "insufficient funds")
 	ErrPlayerWalletMismatch = newError(KindBusiness, "PLAYER_WALLET_MISMATCH", "wallet does not belong to the player")
-	ErrMoneyOverflow        = newError(KindBusiness, "AMOUNT_OUT_OF_RANGE", "monetary value out of range")
+
+	ErrReferenceNotFound          = newError(KindBusiness, "REFERENCE_NOT_FOUND", "referenced transaction did not arrive in time")
+	ErrReferenceNotProcessed      = newError(KindBusiness, "REFERENCE_NOT_PROCESSED", "referenced transaction was not processed successfully")
+	ErrReferenceMismatch          = newError(KindBusiness, "REFERENCE_MISMATCH", "operation does not match the referenced transaction")
+	ErrReferenceKindNotReversible = newError(KindBusiness, "REFERENCE_KIND_NOT_REVERSIBLE", "referenced transaction kind cannot be reversed this way")
+	ErrAmountMismatch             = newError(KindBusiness, "AMOUNT_MISMATCH", "amount differs from the referenced transaction")
+	ErrAlreadyReversed            = newError(KindBusiness, "ALREADY_REVERSED", "referenced transaction already has a successful reversal")
+	ErrReversalInsufficientFunds  = newError(KindBusiness, "REVERSAL_INSUFFICIENT_FUNDS", "insufficient funds to reverse the referenced transaction")
+	ErrMoneyOverflow              = newError(KindBusiness, "AMOUNT_OUT_OF_RANGE", "monetary value out of range")
 
 	ErrInvalidWallet      = newError(KindInternal, "INVALID_WALLET", "invalid wallet state")
 	ErrInvalidLedgerEntry = newError(KindInternal, "INVALID_LEDGER_ENTRY", "invalid ledger entry")
