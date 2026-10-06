@@ -189,6 +189,41 @@ Formato: **contexto** (com a referência ao README) → **opções e trade-offs*
   - A reidratação de `REJECTED` sem `balanceAfter` falha. O evento `WagerTransactionRejected` traz `data.observedBalance`.
   - `FAILED` (falha de infraestrutura) continua sem saldo, porque pode acontecer sem que a carteira tenha sido lida.
 
+## D-016 — Schema: `TEXT` + `CHECK` e moeda explícita do saldo observado (etapa 1.4)
+
+- **Tipos fixos:** `kind`, `status`, `origin` e `direction` são `TEXT` com `CHECK (... IN (...))`, e não `ENUM`.
+  - Opções: `TEXT` + `CHECK` (simples de evoluir e reverter, funciona direto com pgx) × `ENUM` (tipagem forte, mas `ALTER TYPE` limitado, sem como remover valores e com cast/registro no pgx).
+- **Moeda do saldo observado:** `wager_transactions.balance_after BIGINT` + `balance_currency CHAR(3)`, com `CHECK` que exige os dois juntos ou nenhum.
+  - Opções: coluna própria × usar a moeda da carteira via join.
+  - Motivo: numa rejeição por `CURRENCY_MISMATCH`, o saldo observado está na moeda da carteira, diferente da moeda da transação (D-015). README §6.1: "a persistência deve preservar exatamente valor e moeda".
+
+## D-017 — Invariantes impostas pelo banco (etapa 1.4)
+
+Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada por `TestSchema_Invariants` (27 casos, que conferem o código do erro **e o nome da constraint**):
+
+| Invariante | Proteção |
+| --- | --- |
+| Saldo nunca negativo | `wallets.balance CHECK (>= 0)`; no ledger, `balance_before/after >= 0` |
+| Uma carteira por `(player, currency)` | `wallets_player_currency_uk` |
+| Idempotência persistente por provedor | `wt_provider_idempotency_key_uk (provider_id, idempotency_key)` e `wt_provider_external_id_uk (provider_id, external_transaction_id)`, índices parciais para `origin = 'EXTERNAL'` |
+| Crédito inicial único | `wt_single_opening_per_wallet_uk (wallet_id) WHERE kind = 'OPENING'` |
+| Uma reversão bem-sucedida por transação (D-003) | `wt_single_successful_reversal_uk (reference_transaction_id) WHERE status = 'PROCESSED' AND kind IN ('REFUND','ROLLBACK')` |
+| Interno × externo | `origin` explícito; `wt_origin_matches_kind_ck` (`INTERNAL` ⇔ `OPENING`); `wt_internal_has_no_external_data_ck`; `wt_external_has_required_data_ck` |
+| Política de valor por tipo | `wt_amount_by_kind_ck`: LOSS ⇔ `amount = 0` |
+| Regras de referência | `wt_reversal_has_reference_ck`; `wt_bet_loss_have_no_reference_ck` (D-015); `wt_processed_reversal_has_resolved_reference_ck` |
+| Resultado de transação concluída | `wt_terminal_has_processed_at_ck`, `wt_concluded_has_balance_ck` (PROCESSED/REJECTED), `wt_unsuccessful_has_failure_code_ck` (REJECTED/FAILED), `wt_balance_pair_ck` |
+| Estado terminal imutável | trigger `wager_transactions_terminal_guard` (BEFORE UPDATE) |
+| Ledger: um lançamento por `(wallet, transaction)` | `ledger_wallet_transaction_uk` |
+| Ledger: lançamento da mesma carteira da transação | FK composta `ledger_transaction_belongs_to_wallet_fk (transaction_id, wallet_id) → wager_transactions (id, wallet_id)`, apoiada por `wt_id_wallet_uk` |
+| Ledger: aritmética | `ledger_balance_math_ck` (`after = before ± amount`) |
+| Ledger append-only | duas camadas: (1) o role `wallet_app` só tem `SELECT, INSERT`, então UPDATE/DELETE/TRUNCATE dão *permission denied*; (2) triggers `BEFORE UPDATE OR DELETE` e `BEFORE TRUNCATE` bloqueiam **até o dono do schema** |
+| Ausência de exclusões | o `wallet_app` não tem `DELETE` em nenhuma tabela |
+| Inbox: `(consumer_name, message_id)` único | chave primária |
+| Outbox: snapshot imutável | trigger `outbox_events_snapshot_guard` bloqueia mudança de `event_id`, `aggregate_*`, `event_type`, `event_version`, `payload`, `correlation_id` e `occurred_at`, e impede republicar algo com `published_at` já preenchido; só os campos de controle (`attempts`, `next_attempt_at`, `locked_*`, `published_at`, `last_error`) podem mudar |
+
+- **Ausência de referência é `NULL`, nunca `''`:** os repositórios gravam campos opcionais vazios como `NULL`, e o domínio usa `""` para ausente.
+- **Migrations:** `000001`–`000005`, uma por tabela, cada uma com seus grants. O `down` remove a tabela e a função de trigger. Comandos: `make migrate-up`, `make migrate-down` (um passo), `make migrate-down-all` e `make migrate-version`. Verificado: `down -all` → `up` limpo, no compose e em teste (`TestMigrations_UpDownUp`).
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -208,3 +243,8 @@ Dois testes chamavam `Stop` logo depois de `Start`. A goroutine às vezes ainda 
 
 ### P-006 — Mensagem de erro de parse da config cita o campo, não a variável (etapa 1.2)
 Para `LOG_LEVEL=LOUD`, o `caarlos0/env` retorna `parse error on field "LogLevel"`. A mensagem continua clara e foi aceita sem código extra de tradução.
+
+### P-007 — `CHECK (col <> '')` aceita `NULL` (etapa 1.4)
+No SQL, `NULL <> ''` resulta em `NULL`, e um `CHECK` só rejeita quando o resultado é `false`. A primeira versão de `wt_external_has_required_data_ck` e de `wt_reversal_has_reference_ck` aceitava transação externa sem `provider_id` e REFUND sem referência. O caso do REFUND estava mascarado nos testes porque outra constraint falhava antes.
+- **Correção:** `COALESCE(col, '') <> ''`.
+- **Prevenção:** os testes passaram a verificar o **nome** da constraint violada, não só o código do erro, e cobrem `NULL` e `''` para cada campo obrigatório.

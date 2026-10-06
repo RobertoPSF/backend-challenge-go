@@ -1,4 +1,4 @@
-.PHONY: up down clean build fmt vet test test-race check queues test-integration
+.PHONY: up down clean build fmt vet test test-race check queues test-integration migrate-up migrate-down migrate-down-all migrate-version
 
 up:
 	docker compose up --build -d
@@ -31,3 +31,17 @@ queues:
 
 test-integration: ## Testes de integração com containers reais (testcontainers)
 	go test -tags integration -race -count=1 ./test/...
+
+MIGRATE = docker compose run --rm -T --entrypoint /bin/sh migrate -c
+
+migrate-up: ## Aplica todas as migrations pendentes
+	$(MIGRATE) 'migrate -path /migrations -database "$$DATABASE_MIGRATE_URL" up'
+
+migrate-down: ## Reverte a última migration
+	$(MIGRATE) 'migrate -path /migrations -database "$$DATABASE_MIGRATE_URL" down 1'
+
+migrate-down-all: ## Reverte todas as migrations
+	$(MIGRATE) 'migrate -path /migrations -database "$$DATABASE_MIGRATE_URL" down -all'
+
+migrate-version: ## Mostra a versão atual do schema
+	$(MIGRATE) 'migrate -path /migrations -database "$$DATABASE_MIGRATE_URL" version'

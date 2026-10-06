@@ -4,6 +4,7 @@ package testinfra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -79,12 +80,20 @@ func StartPostgres(t testing.TB) Postgres {
 }
 
 func MigrateUp(ownerURL string) error {
+	return runMigrations(ownerURL, (*migrate.Migrate).Up)
+}
+
+func MigrateDownAll(ownerURL string) error {
+	return runMigrations(ownerURL, (*migrate.Migrate).Down)
+}
+
+func runMigrations(ownerURL string, run func(*migrate.Migrate) error) error {
 	m, err := migrate.New("file://"+filepath.Join(RepoRoot(), "migrations"), strings.Replace(ownerURL, "postgres://", "pgx5://", 1))
 	if err != nil {
 		return err
 	}
 	defer m.Close()
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := run(m); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err
 	}
 	return nil
