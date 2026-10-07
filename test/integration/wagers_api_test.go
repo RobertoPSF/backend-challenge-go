@@ -57,6 +57,25 @@ func balanceOf(r response) string {
 	return amount
 }
 
+type walletFinancials struct {
+	Transactions, LedgerEntries, OutboxEvents int
+	Balance                                   string
+}
+
+func financialState(t *testing.T, a testApp, walletID string) walletFinancials {
+	t.Helper()
+	var s walletFinancials
+	if err := a.DB.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM wager_transactions WHERE wallet_id = $1),
+		(SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id = $1),
+		(SELECT count(*) FROM outbox_events WHERE aggregate_id = $1),
+		(SELECT balance::text FROM wallets WHERE id = $1)`, walletID,
+	).Scan(&s.Transactions, &s.LedgerEntries, &s.OutboxEvents, &s.Balance); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestWagerAPI(t *testing.T) {
 	a := startApp(t)
 	admin := a.KC.Token(t, "wallet-service")
@@ -218,9 +237,16 @@ func TestWagerAPI(t *testing.T) {
 		id := ext()
 		created := submit(t, a, providerA, "provider-a", w, "BET", "10.00", id, "")
 		txID := created.Body["transactionId"].(string)
+		before := financialState(t, a, w.ID)
 
-		if res := submit(t, a, "", "provider-a", w, "BET", "1.00", ext(), ""); res.Status != http.StatusUnauthorized {
-			t.Errorf("no token = %d", res.Status)
+		for name, token := range map[string]string{
+			"no token":       "",
+			"tampered token": providerA[:len(providerA)-4] + "AAAA",
+			"wrong audience": a.KC.Token(t, "other-api-client"),
+		} {
+			if res := submit(t, a, token, "provider-a", w, "BET", "1.00", ext(), ""); res.Status != http.StatusUnauthorized {
+				t.Errorf("%s = %d", name, res.Status)
+			}
 		}
 		if res := submit(t, a, admin, "provider-a", w, "BET", "1.00", ext(), ""); res.Status != http.StatusForbidden {
 			t.Errorf("internal service submitting = %d", res.Status)
@@ -251,11 +277,15 @@ func TestWagerAPI(t *testing.T) {
 			}
 		}
 
-		if n := count(t, a.DB, `SELECT count(*) FROM wager_transactions WHERE wallet_id = $1 AND origin = 'EXTERNAL'`, w.ID); n != 1 {
-			t.Errorf("transactions = %d, want 1 (denied requests must not persist)", n)
+		if after := financialState(t, a, w.ID); after != before {
+			t.Errorf("denied requests had a financial effect: %+v -> %+v", before, after)
 		}
-		if res := doRequest(t, http.MethodGet, a.BaseURL+"/wallets/"+w.ID, admin, nil, nil); balanceOf(res) != "90.00" {
-			t.Errorf("balance = %s, want 90.00", balanceOf(res))
+
+		own := doRequest(t, http.MethodPost, a.BaseURL+"/wagering/transactions", providerB,
+			wagerBody("provider-b", w, "BET", "10.00", id, ""),
+			map[string]string{"Idempotency-Key": "provider-a:" + id})
+		if own.Status != http.StatusCreated || own.Body["transactionId"] == txID || own.Body["idempotentReplay"] == true {
+			t.Errorf("provider-b reusing provider-a's key in its own scope = %d %s, want a new transaction", own.Status, own.Raw)
 		}
 	})
 

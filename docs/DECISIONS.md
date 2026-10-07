@@ -735,6 +735,23 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   4. **Invariante global** (`assertAllWalletsReconcile`): para **todas** as carteiras do banco, saldo armazenado = créditos − débitos do ledger. Roda ao final de `TestWagerAPI` e de `TestRestart`, e acusou corretamente a carteira adulterada de propósito pelo teste de reconciliação, que agora desfaz a adulteração ao terminar.
 - **Harness:** dividido em `startInfra` (containers + variáveis) e `startInstance` (uma instância Fx da aplicação, com `INSTANCE_ID` próprio), o que permite várias instâncias e reinícios sobre a mesma infraestrutura.
 
+## D-034 — Testes de autenticação e autorização (etapa 3.2)
+
+Todos rodam contra o **Keycloak real**, com tokens `client_credentials`, em dois níveis:
+- **Middleware** (`TestAuth_RealKeycloak`):
+  - 401 para cabeçalho ausente ou malformado, assinatura ou payload adulterados, `aud` errado, issuer de outro realm e token expirado;
+  - 403 para role errada ou ausente.
+- **Aplicação completa** (`TestWalletAPI`, `TestWagerAPI`):
+  - provider em `POST /wallets`, `GET /wallets/:id`, ledger e reconciliação → 403 sem criar linhas;
+  - `provider-b` se passando pelo `provider-a` → 403;
+  - leitura cruzada por ID interno → 404, e pela rota externa → 403;
+  - admin lê qualquer transação → 200.
+
+Lacunas fechadas nesta etapa:
+1. **Sem efeito financeiro nas negações:** `financialState` compara transações, lançamentos, eventos da outbox e saldo da carteira antes e depois de todas as tentativas negadas (sem token, token adulterado, outra audiência, admin enviando operação, provedor se passando por outro). Antes, só as transações e o saldo eram conferidos.
+2. **401 com tokens reais na aplicação completa**, não só no middleware isolado.
+3. **Chave do `provider-a` reutilizada pelo `provider-b` no próprio escopo** (mesmo `externalTransactionId` e mesmo `Idempotency-Key`, mas `providerId=provider-b`): cria uma transação **nova** do `provider-b` (201, outro `transactionId`, sem `idempotentReplay`). Isso confirma que a idempotência é escopada pelo provedor do token e não vaza o resultado de outro provedor.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
