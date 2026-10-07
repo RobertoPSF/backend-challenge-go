@@ -23,6 +23,7 @@ import (
 	"github.com/RobertoPSF/backend-challenge-go/internal/app"
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/fault"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/sqsclient"
 	"github.com/RobertoPSF/backend-challenge-go/internal/worker"
@@ -111,6 +112,7 @@ func (c *Consumer) handle(ctx context.Context, m types.Message) {
 
 	switch decision {
 	case outcomeDelete:
+		fault.Point(fault.ConsumerAfterCommitBeforeDelete)
 		c.delete(work, m, log)
 		if result.Duplicate {
 			c.metrics.SQSMessages.WithLabelValues("duplicate").Inc()

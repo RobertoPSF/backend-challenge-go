@@ -1,13 +1,23 @@
+x-e2e-env: &e2e-env
+  SQS_VISIBILITY_TIMEOUT: 10s
+  SQS_HANDLER_TIMEOUT: 8s
+  OUTBOX_LEASE: 10s
+  OUTBOX_PUBLISH_TIMEOUT: 5s
+
 services:
   app:
     environment:
+      <<: *e2e-env
       INSTANCE_ID: app1
+      FAULT_INJECTION_ENABLED: ${FAULT_INJECTION_ENABLED:-false}
+      FAULT_POINT: ${FAULT_POINT:-}
 
   app2:
     extends:
       file: docker-compose.yml
       service: app
     environment:
+      <<: *e2e-env
       INSTANCE_ID: app2
     ports: !override
       - "8082:8080"
@@ -17,6 +27,7 @@ services:
       file: docker-compose.yml
       service: app
     environment:
+      <<: *e2e-env
       INSTANCE_ID: app3
     ports: !override
       - "8083:8080"

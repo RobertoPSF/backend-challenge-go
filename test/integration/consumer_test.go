@@ -345,5 +345,6 @@ func brokenWagers(t *testing.T, cfg config.Config) *app.Wagers {
 	}
 	t.Cleanup(pool.Close)
 	m := metrics.New(prometheus.NewRegistry())
-	return app.NewWagers(store.New(pool, m, silentLog), cfg, m)
+	cfg.Database.TxTimeout = 15 * time.Second
+	return app.NewWagers(store.New(pool, cfg, m, silentLog), cfg, m)
 }

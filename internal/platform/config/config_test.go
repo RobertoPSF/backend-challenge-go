@@ -36,20 +36,21 @@ func TestLoad_RejectsInvalidConfig(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"missing database url":     {env: map[string]string{"DATABASE_URL": ""}, want: "DATABASE_URL"},
-		"missing aws region":       {env: map[string]string{"AWS_REGION": ""}, want: "AWS_REGION"},
-		"missing oidc issuer":      {env: map[string]string{"OIDC_ISSUER": ""}, want: "OIDC_ISSUER"},
-		"missing jwks url":         {env: map[string]string{"OIDC_JWKS_URL": ""}, want: "OIDC_JWKS_URL"},
-		"zero max conns":           {env: map[string]string{"DB_MAX_CONNS": "0"}, want: "DB_MAX_CONNS"},
-		"non fifo queue":           {env: map[string]string{"SQS_INPUT_QUEUE": "wager-transactions"}, want: "SQS_INPUT_QUEUE"},
-		"invalid log level":        {env: map[string]string{"LOG_LEVEL": "LOUD"}, want: "LogLevel"},
-		"lock above statement":     {env: map[string]string{"DB_LOCK_TIMEOUT": "10s", "DB_STATEMENT_TIMEOUT": "5s"}, want: "DB_LOCK_TIMEOUT"},
-		"zero lock timeout":        {env: map[string]string{"DB_LOCK_TIMEOUT": "0s"}, want: "DB_LOCK_TIMEOUT"},
-		"zero pending attempts":    {env: map[string]string{"PENDING_MAX_ATTEMPTS": "0"}, want: "PENDING_"},
-		"max below base backoff":   {env: map[string]string{"PENDING_BASE_BACKOFF": "10s", "PENDING_MAX_BACKOFF": "1s"}, want: "PENDING_"},
-		"handler above visibility": {env: map[string]string{"SQS_HANDLER_TIMEOUT": "40s"}, want: "SQS_HANDLER_TIMEOUT"},
-		"long poll above 20s":      {env: map[string]string{"SQS_WAIT_TIME": "21s"}, want: "SQS_WAIT_TIME"},
-		"lease below publish":      {env: map[string]string{"OUTBOX_LEASE": "5s", "OUTBOX_PUBLISH_TIMEOUT": "10s"}, want: "OUTBOX_LEASE"},
+		"missing database url":       {env: map[string]string{"DATABASE_URL": ""}, want: "DATABASE_URL"},
+		"missing aws region":         {env: map[string]string{"AWS_REGION": ""}, want: "AWS_REGION"},
+		"missing oidc issuer":        {env: map[string]string{"OIDC_ISSUER": ""}, want: "OIDC_ISSUER"},
+		"missing jwks url":           {env: map[string]string{"OIDC_JWKS_URL": ""}, want: "OIDC_JWKS_URL"},
+		"zero max conns":             {env: map[string]string{"DB_MAX_CONNS": "0"}, want: "DB_MAX_CONNS"},
+		"non fifo queue":             {env: map[string]string{"SQS_INPUT_QUEUE": "wager-transactions"}, want: "SQS_INPUT_QUEUE"},
+		"invalid log level":          {env: map[string]string{"LOG_LEVEL": "LOUD"}, want: "LogLevel"},
+		"lock above statement":       {env: map[string]string{"DB_LOCK_TIMEOUT": "10s", "DB_STATEMENT_TIMEOUT": "5s"}, want: "DB_LOCK_TIMEOUT"},
+		"zero lock timeout":          {env: map[string]string{"DB_LOCK_TIMEOUT": "0s"}, want: "DB_LOCK_TIMEOUT"},
+		"tx timeout below statement": {env: map[string]string{"DB_TX_TIMEOUT": "10s"}, want: "DB_TX_TIMEOUT"},
+		"zero pending attempts":      {env: map[string]string{"PENDING_MAX_ATTEMPTS": "0"}, want: "PENDING_"},
+		"max below base backoff":     {env: map[string]string{"PENDING_BASE_BACKOFF": "10s", "PENDING_MAX_BACKOFF": "1s"}, want: "PENDING_"},
+		"handler above visibility":   {env: map[string]string{"SQS_HANDLER_TIMEOUT": "40s"}, want: "SQS_HANDLER_TIMEOUT"},
+		"long poll above 20s":        {env: map[string]string{"SQS_WAIT_TIME": "21s"}, want: "SQS_WAIT_TIME"},
+		"lease below publish":        {env: map[string]string{"OUTBOX_LEASE": "5s", "OUTBOX_PUBLISH_TIMEOUT": "10s"}, want: "OUTBOX_LEASE"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

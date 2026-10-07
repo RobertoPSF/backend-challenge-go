@@ -1020,6 +1020,8 @@ Cada teste de acesso negado confere também que **não houve efeito financeiro**
 
 ## 3.4 Simulação de falhas e recuperação
 
+> Implementado com `make test-faults` (tag `faults`). O cenário 6 revelou que, com o banco travado, as requisições ficavam penduradas; isso foi corrigido com `DB_TX_TIMEOUT` (D-036).
+
 ### Mecanismo de injeção de falhas
 `platform/fault`: a variável `FAULT_POINT` (desligada por padrão; **só tem efeito se `FAULT_INJECTION_ENABLED=true`**) faz o processo chamar `os.Exit(137)` em pontos nomeados:
 - `consumer.after_commit_before_delete`

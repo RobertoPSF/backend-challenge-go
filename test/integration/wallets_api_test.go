@@ -245,7 +245,7 @@ func addBets(t *testing.T, a testApp, walletID uuid.UUID, n int) {
 	t.Helper()
 	env := newStoreOn(t, a.PG.AppURL, 5*time.Second)
 	ctx := context.Background()
-	err := env.store.InTx(ctx, func(r *store.Repos) error {
+	err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 		w, err := r.Wallets.GetForUpdate(ctx, walletID)
 		if err != nil {
 			return err

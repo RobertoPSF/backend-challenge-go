@@ -11,6 +11,7 @@ import (
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/domain"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/fault"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
 )
@@ -63,7 +64,7 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 
 	started := time.Now()
 	var result WagerResult
-	err := s.store.InTx(ctx, func(r *store.Repos) error {
+	err := s.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 		var err error
 		result, err = s.process(ctx, r, cmd)
 		return err
@@ -93,7 +94,7 @@ func (s *Wagers) ProcessMessage(ctx context.Context, msg InboundMessage, cmd Wag
 
 	started := time.Now()
 	var result MessageResult
-	err := s.store.InTx(ctx, func(r *store.Repos) error {
+	err := s.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 		inserted, err := r.Inbox.Insert(ctx, msg.Consumer, msg.MessageID, msg.Hash, s.now())
 		if err != nil {
 			return err
@@ -139,6 +140,7 @@ func (s *Wagers) process(ctx context.Context, r *store.Repos, cmd WagerCommand) 
 	if err := s.settle(ctx, r, tx, s.eventContext(cmd.CorrelationID, cmd.CausationID)); err != nil {
 		return WagerResult{}, err
 	}
+	fault.Point(fault.WagerBeforeCommit)
 	return WagerResult{Transaction: tx}, nil
 }
 
@@ -263,7 +265,7 @@ func (s *Wagers) ResumeNextPending(ctx context.Context) (bool, error) {
 	outcome := ""
 	var settled *domain.WagerTransaction
 	started := time.Now()
-	err := s.store.InTx(ctx, func(r *store.Repos) error {
+	err := s.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 		outcome, settled = "", nil
 		now := s.now()
 		view, err := r.Transactions.ClaimDuePending(ctx, now)
@@ -275,6 +277,7 @@ func (s *Wagers) ResumeNextPending(ctx context.Context) (bool, error) {
 			return err
 		}
 		found = true
+		fault.Point(fault.WorkerAfterClaim)
 
 		tx := view.Transaction
 		eventCtx := domain.EventContext{CorrelationID: view.CorrelationID, CausationID: tx.ID().String(), OccurredAt: now}
@@ -349,13 +352,21 @@ func (s *Wagers) replay(ctx context.Context, r *store.Repos, req domain.WagerReq
 type TransactionView = store.TransactionView
 
 func (s *Wagers) Get(ctx context.Context, id uuid.UUID) (TransactionView, error) {
-	v, err := s.store.Read().Transactions.GetView(ctx, id)
-	return v, translate(ctx, err)
+	var v TransactionView
+	err := s.store.Query(ctx, func(ctx context.Context, r *store.Repos) (err error) {
+		v, err = r.Transactions.GetView(ctx, id)
+		return err
+	})
+	return v, translate(err)
 }
 
 func (s *Wagers) GetByExternalID(ctx context.Context, providerID, externalID string) (TransactionView, error) {
-	v, err := s.store.Read().Transactions.FindViewByExternalID(ctx, providerID, externalID)
-	return v, translate(ctx, err)
+	var v TransactionView
+	err := s.store.Query(ctx, func(ctx context.Context, r *store.Repos) (err error) {
+		v, err = r.Transactions.FindViewByExternalID(ctx, providerID, externalID)
+		return err
+	})
+	return v, translate(err)
 }
 
 func isBusinessRejection(err error) bool {

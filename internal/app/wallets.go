@@ -44,7 +44,7 @@ func (s *Wallets) Open(ctx context.Context, playerID uuid.UUID, initialBalance d
 		return nil, err
 	}
 
-	err = s.store.InTx(ctx, func(r *store.Repos) error {
+	err = s.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 		if err := r.Wallets.Insert(ctx, opening.Wallet); err != nil {
 			return err
 		}
@@ -66,19 +66,25 @@ func (s *Wallets) Open(ctx context.Context, playerID uuid.UUID, initialBalance d
 }
 
 func (s *Wallets) Get(ctx context.Context, id uuid.UUID) (*domain.Wallet, error) {
-	w, err := s.store.Read().Wallets.Get(ctx, id)
-	return w, translate(ctx, err)
+	var w *domain.Wallet
+	err := s.store.Query(ctx, func(ctx context.Context, r *store.Repos) (err error) {
+		w, err = r.Wallets.Get(ctx, id)
+		return err
+	})
+	return w, translate(err)
 }
 
 func (s *Wallets) Ledger(ctx context.Context, walletID uuid.UUID, after *LedgerCursor, limit int) (LedgerPage, error) {
-	r := s.store.Read()
-	if _, err := r.Wallets.Get(ctx, walletID); err != nil {
-		return LedgerPage{}, translate(ctx, err)
-	}
-
-	entries, err := r.Ledger.ListByWallet(ctx, walletID, after, limit+1)
+	var entries []domain.LedgerEntry
+	err := s.store.Query(ctx, func(ctx context.Context, r *store.Repos) (err error) {
+		if _, err := r.Wallets.Get(ctx, walletID); err != nil {
+			return err
+		}
+		entries, err = r.Ledger.ListByWallet(ctx, walletID, after, limit+1)
+		return err
+	})
 	if err != nil {
-		return LedgerPage{}, translate(ctx, err)
+		return LedgerPage{}, translate(err)
 	}
 
 	page := LedgerPage{Entries: entries}
@@ -90,9 +96,9 @@ func (s *Wallets) Ledger(ctx context.Context, walletID uuid.UUID, after *LedgerC
 	return page, nil
 }
 
-func translate(ctx context.Context, err error) error {
+func translate(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return ErrNotFound
 	}
-	return store.Classify(ctx, err)
+	return err
 }

@@ -1,4 +1,4 @@
-.PHONY: up down clean build fmt vet test test-race check queues test-integration e2e-up e2e-down test-e2e e2e migrate-up migrate-down migrate-down-all migrate-version
+.PHONY: up down clean build fmt vet test test-race check queues test-integration e2e-up e2e-down test-e2e test-faults e2e migrate-up migrate-down migrate-down-all migrate-version
 
 up:
 	docker compose up --build -d
@@ -42,6 +42,9 @@ e2e-down: ## Derruba o ambiente multi-instância e apaga os volumes
 
 test-e2e: ## Testes contra as três instâncias já em execução
 	go test -tags e2e -race -count=1 ./test/e2e/...
+
+test-faults: ## Simulações de falha: derruba, pausa e reinicia containers do ambiente e2e (rode depois de make e2e-up)
+	go test -tags faults -race -count=1 -p 1 -timeout 20m ./test/e2e/...
 
 e2e: e2e-up test-e2e
 

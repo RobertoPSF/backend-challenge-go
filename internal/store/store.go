@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 )
 
@@ -58,23 +59,33 @@ func newRepos(q querier) *Repos {
 
 type Store struct {
 	pool    *pgxpool.Pool
+	timeout time.Duration
 	log     *slog.Logger
 	metrics *metrics.Metrics
 }
 
-func New(pool *pgxpool.Pool, m *metrics.Metrics, log *slog.Logger) *Store {
-	return &Store{pool: pool, log: log, metrics: m}
+func New(pool *pgxpool.Pool, cfg config.Config, m *metrics.Metrics, log *slog.Logger) *Store {
+	return &Store{pool: pool, timeout: cfg.Database.TxTimeout, log: log, metrics: m}
 }
 
 func (s *Store) Read() *Repos {
 	return newRepos(s.pool)
 }
 
+func (s *Store) Query(ctx context.Context, fn func(ctx context.Context, r *Repos) error) error {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	return Classify(ctx, fn(ctx, newRepos(s.pool)))
+}
+
 // InTx runs fn inside a single READ COMMITTED transaction: everything fn does
 // through r is committed atomically or rolled back. The whole fn is retried
 // on serialization failures, deadlocks and ErrConcurrentUpdate, so fn must not
-// have side effects outside the transaction.
-func (s *Store) InTx(ctx context.Context, fn func(r *Repos) error) error {
+// have side effects outside the transaction. All attempts share one
+// DB_TX_TIMEOUT deadline, enforced by the client even if the server hangs.
+func (s *Store) InTx(ctx context.Context, fn func(ctx context.Context, r *Repos) error) error {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 	var err error
 	for attempt := 1; attempt <= maxTxAttempts; attempt++ {
 		err = s.runTx(ctx, fn)
@@ -86,7 +97,7 @@ func (s *Store) InTx(ctx context.Context, fn func(r *Repos) error) error {
 		s.log.WarnContext(ctx, "transaction conflict, retrying", "reason", reason, "attempt", attempt)
 		if attempt < maxTxAttempts {
 			if sleepErr := backoff(ctx, attempt); sleepErr != nil {
-				return sleepErr
+				return Classify(ctx, sleepErr)
 			}
 		}
 	}
@@ -105,26 +116,28 @@ func (s *Store) Backlog(ctx context.Context) (metrics.Backlog, error) {
 	return b, err
 }
 
-func (s *Store) ReadSnapshot(ctx context.Context, fn func(r *Repos) error) error {
+func (s *Store) ReadSnapshot(ctx context.Context, fn func(ctx context.Context, r *Repos) error) error {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Classify(ctx, err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if err := fn(newRepos(tx)); err != nil {
+	if err := fn(ctx, newRepos(tx)); err != nil {
 		return Classify(ctx, err)
 	}
 	return Classify(ctx, tx.Commit(ctx))
 }
 
-func (s *Store) runTx(ctx context.Context, fn func(r *Repos) error) error {
+func (s *Store) runTx(ctx context.Context, fn func(ctx context.Context, r *Repos) error) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	if err := fn(newRepos(tx)); err != nil {
+	if err := fn(ctx, newRepos(tx)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -147,7 +160,7 @@ func conflictReason(err error) (string, bool) {
 }
 
 func Classify(ctx context.Context, err error) error {
-	if err == nil || ctx.Err() != nil {
+	if err == nil || errors.Is(ctx.Err(), context.Canceled) {
 		return err
 	}
 	if isTransient(err) {

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/config"
+	"github.com/RobertoPSF/backend-challenge-go/internal/platform/fault"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/metrics"
 	"github.com/RobertoPSF/backend-challenge-go/internal/platform/sqsclient"
 	"github.com/RobertoPSF/backend-challenge-go/internal/store"
@@ -58,6 +59,9 @@ func (p *Publisher) RunOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("claim outbox events: %w", err)
 	}
+	if len(events) > 0 {
+		fault.Point(fault.OutboxAfterClaimBeforePublish)
+	}
 
 	for i, e := range events {
 		if ctx.Err() != nil {
@@ -95,6 +99,7 @@ func (p *Publisher) publish(ctx context.Context, e store.OutboxEvent, owner stri
 		return
 	}
 	p.metrics.OutboxPublish.WithLabelValues("published").Inc()
+	fault.Point(fault.OutboxAfterPublishBeforeMark)
 	if err := outbox.MarkPublished(work, e.EventID, owner, p.now()); err != nil {
 		log.Error("event published but not marked; it will be republished with the same eventId", "error", err)
 		return

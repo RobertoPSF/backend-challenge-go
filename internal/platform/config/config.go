@@ -70,6 +70,7 @@ type Database struct {
 	MaxConns         int32         `env:"DB_MAX_CONNS" envDefault:"10"`
 	LockTimeout      time.Duration `env:"DB_LOCK_TIMEOUT" envDefault:"5s"`
 	StatementTimeout time.Duration `env:"DB_STATEMENT_TIMEOUT" envDefault:"10s"`
+	TxTimeout        time.Duration `env:"DB_TX_TIMEOUT" envDefault:"15s"`
 }
 
 type AWS struct {
@@ -104,6 +105,9 @@ func (c Config) Validate() error {
 	}
 	if c.Database.LockTimeout >= c.Database.StatementTimeout {
 		errs = append(errs, errors.New("DB_LOCK_TIMEOUT must be lower than DB_STATEMENT_TIMEOUT"))
+	}
+	if c.Database.TxTimeout <= c.Database.StatementTimeout {
+		errs = append(errs, errors.New("DB_TX_TIMEOUT must be greater than DB_STATEMENT_TIMEOUT"))
 	}
 	if c.Pending.BaseBackoff <= 0 || c.Pending.MaxBackoff < c.Pending.BaseBackoff || c.Pending.MaxAttempts < 1 ||
 		c.Pending.TTL <= 0 || c.Pending.Workers < 1 || c.Pending.PollInterval <= 0 {

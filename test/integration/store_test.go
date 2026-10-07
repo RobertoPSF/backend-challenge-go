@@ -42,7 +42,7 @@ func newStoreEnv(t *testing.T, lockTimeout time.Duration) storeEnv {
 func newStoreOn(t *testing.T, databaseURL string, lockTimeout time.Duration) storeEnv {
 	t.Helper()
 	cfg := config.Config{Database: config.Database{
-		URL: databaseURL, MaxConns: 10, LockTimeout: lockTimeout, StatementTimeout: 10 * time.Second,
+		URL: databaseURL, MaxConns: 10, LockTimeout: lockTimeout, StatementTimeout: 10 * time.Second, TxTimeout: 15 * time.Second,
 	}}
 	lc := fxtest.NewLifecycle(t)
 	pool, err := postgres.NewPool(lc, cfg, silentLog)
@@ -54,7 +54,7 @@ func newStoreOn(t *testing.T, databaseURL string, lockTimeout time.Duration) sto
 
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	return storeEnv{store: store.New(pool, m, silentLog), pool: pool, reg: reg, metrics: m}
+	return storeEnv{store: store.New(pool, cfg, m, silentLog), pool: pool, reg: reg, metrics: m}
 }
 
 func brl(t *testing.T, amount string) domain.Money {
@@ -74,7 +74,7 @@ func openWallet(t *testing.T, env storeEnv, initial string) domain.WalletOpening
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = env.store.InTx(context.Background(), func(r *store.Repos) error {
+	err = env.store.InTx(context.Background(), func(ctx context.Context, r *store.Repos) error {
 		if err := r.Wallets.Insert(context.Background(), op.Wallet); err != nil {
 			return err
 		}
@@ -154,7 +154,7 @@ func TestStore(t *testing.T) {
 		if err := bet.MarkRejected("INSUFFICIENT_FUNDS", brl(t, "20.00"), time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		if err := env.store.InTx(ctx, func(r *store.Repos) error { return r.Transactions.Insert(ctx, bet, "corr") }); err != nil {
+		if err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error { return r.Transactions.Insert(ctx, bet, "corr") }); err != nil {
 			t.Fatal(err)
 		}
 
@@ -176,7 +176,7 @@ func TestStore(t *testing.T) {
 	t.Run("duplicate wallet maps to a domain conflict", func(t *testing.T) {
 		op := openWallet(t, env, "0.00")
 		dup, _ := domain.OpenWallet(op.Wallet.PlayerID(), domain.Zero(domain.BRL), ctxEvent)
-		err := env.store.InTx(ctx, func(r *store.Repos) error { return r.Wallets.Insert(ctx, dup.Wallet) })
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error { return r.Wallets.Insert(ctx, dup.Wallet) })
 		if !errors.Is(err, domain.ErrWalletAlreadyExists) {
 			t.Fatalf("error = %v, want ErrWalletAlreadyExists", err)
 		}
@@ -194,7 +194,7 @@ func TestStore(t *testing.T) {
 	t.Run("error inside the transaction rolls everything back", func(t *testing.T) {
 		op, _ := domain.OpenWallet(uuid.New(), brl(t, "10.00"), ctxEvent)
 		boom := errors.New("boom")
-		err := env.store.InTx(ctx, func(r *store.Repos) error {
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 			_ = r.Wallets.Insert(ctx, op.Wallet)
 			_ = r.Transactions.Insert(ctx, op.Transaction, "corr")
 			_ = r.Ledger.Insert(ctx, *op.LedgerEntry)
@@ -231,7 +231,7 @@ func TestStore(t *testing.T) {
 	t.Run("concurrent update is retried and then succeeds", func(t *testing.T) {
 		before := metricValue(t, env.reg, "wallet_concurrency_conflicts_total", "reason", "version")
 		var calls atomic.Int32
-		err := env.store.InTx(ctx, func(r *store.Repos) error {
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 			if calls.Add(1) == 1 {
 				return store.ErrConcurrentUpdate
 			}
@@ -247,7 +247,7 @@ func TestStore(t *testing.T) {
 
 	t.Run("retries are bounded", func(t *testing.T) {
 		var calls atomic.Int32
-		err := env.store.InTx(ctx, func(r *store.Repos) error {
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 			calls.Add(1)
 			return store.ErrConcurrentUpdate
 		})
@@ -261,7 +261,7 @@ func TestStore(t *testing.T) {
 		locked, release := make(chan struct{}), make(chan struct{})
 		done := make(chan error, 1)
 		go func() {
-			done <- env.store.InTx(ctx, func(r *store.Repos) error {
+			done <- env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 				if _, err := r.Wallets.GetForUpdate(ctx, op.Wallet.ID()); err != nil {
 					return err
 				}
@@ -273,7 +273,7 @@ func TestStore(t *testing.T) {
 		<-locked
 
 		start := time.Now()
-		err := env.store.InTx(ctx, func(r *store.Repos) error {
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 			_, err := r.Wallets.GetForUpdate(ctx, op.Wallet.ID())
 			return err
 		})
@@ -296,7 +296,7 @@ func TestStore(t *testing.T) {
 		hold, release := make(chan struct{}), make(chan struct{})
 		done := make(chan error, 1)
 		go func() {
-			done <- env.store.InTx(ctx, func(r *store.Repos) error {
+			done <- env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 				if _, err := r.Wallets.GetForUpdate(ctx, locked.Wallet.ID()); err != nil {
 					return err
 				}
@@ -308,7 +308,7 @@ func TestStore(t *testing.T) {
 		<-hold
 
 		start := time.Now()
-		err := env.store.InTx(ctx, func(r *store.Repos) error {
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 			_, err := r.Wallets.GetForUpdate(ctx, other.Wallet.ID())
 			return err
 		})
@@ -321,7 +321,7 @@ func TestStore(t *testing.T) {
 
 	t.Run("ledger pagination is stable", func(t *testing.T) {
 		op := openWallet(t, env, "100.00")
-		err := env.store.InTx(ctx, func(r *store.Repos) error {
+		err := env.store.InTx(ctx, func(ctx context.Context, r *store.Repos) error {
 			w, err := r.Wallets.GetForUpdate(ctx, op.Wallet.ID())
 			if err != nil {
 				return err

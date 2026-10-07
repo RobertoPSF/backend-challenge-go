@@ -32,7 +32,7 @@ func NewReconciler(st *store.Store, m *metrics.Metrics, log *slog.Logger) *Recon
 
 func (s *Reconciler) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconciliation, error) {
 	var result Reconciliation
-	err := s.store.ReadSnapshot(ctx, func(r *store.Repos) error {
+	err := s.store.ReadSnapshot(ctx, func(ctx context.Context, r *store.Repos) error {
 		wallet, err := r.Wallets.Get(ctx, walletID)
 		if err != nil {
 			return err
@@ -60,7 +60,7 @@ func (s *Reconciler) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconci
 		return nil
 	})
 	if err != nil {
-		return Reconciliation{}, translate(ctx, err)
+		return Reconciliation{}, translate(err)
 	}
 
 	if !result.Consistent {

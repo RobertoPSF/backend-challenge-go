@@ -782,6 +782,78 @@ Lacunas fechadas nesta etapa:
   - O trabalho assíncrono se distribuiu entre as instâncias. Pendências resolvidas: 24, 26 e 22. Mensagens SQS: 20, 22 e 18.
 - **Fora do escopo:** o teste de carga (k6/vegeta), opcional no plano, não foi feito.
 
+## D-036 — Prazo do lado da aplicação para cada operação no banco (etapa 3.4)
+
+- **Problema (P-019):** com o Postgres pausado, uma requisição de negócio ficava pendurada indefinidamente. O `statement_timeout` e o `lock_timeout` são aplicados **pelo servidor**, que estava parado. O kernel continua aceitando a conexão TCP, então nem o connect falha. Enquanto isso, a readiness já respondia 503.
+- **Opções:**
+  - (a) prazo por transação no store;
+  - (b) timeout só no HTTP;
+  - (c) manter e documentar.
+- **Decisão: (a).** `DB_TX_TIMEOUT` (padrão 15s, validado como maior que o `DB_STATEMENT_TIMEOUT`) limita, do lado do cliente:
+  - cada `InTx` (todas as tentativas de retry dividem o mesmo prazo);
+  - cada `ReadSnapshot`;
+  - o novo `Store.Query`, usado pelas leituras do app.
+- **Como o prazo chega às queries:** as funções passadas ao `InTx`, ao `ReadSnapshot` e ao `Query` agora recebem o `ctx` com prazo, `func(ctx context.Context, r *Repos) error`. Antes, elas usavam o `ctx` de fora, e um prazo aplicado só no `InTx` não alcançaria as queries.
+- **Classificação:**
+  - `Classify` só deixa passar sem classificar o cancelamento do chamador (`context.Canceled`, quando o cliente desistiu);
+  - um prazo estourado (`DeadlineExceeded`) vira `ErrUnavailable`, o que resulta em **503** no HTTP, em retry com backoff no consumidor e em nova tentativa nos workers;
+  - o erro do backoff entre tentativas também passa a ser classificado.
+- **Trade-off aceito:** se o prazo estourar exatamente durante o `COMMIT`, o resultado é ambíguo. O cliente recebe 503, mas a operação pode ter sido gravada. O reenvio cai no replay idempotente, então não duplica.
+- **Resultado:** com o Postgres pausado, `POST /wagering/transactions` responde 503 em 15,0s (antes, nunca respondia). Depois do `unpause`, o reenvio é processado uma única vez.
+
+## D-037 — Injeção de falhas e simulações com processos reais (etapa 3.4)
+
+- **Mecanismo** (escolha: pontos nomeados):
+  - `platform/fault.Point(name)` chama `os.Exit(137)`, o equivalente a um `kill -9`, **somente** se `FAULT_INJECTION_ENABLED=true` e `FAULT_POINT=name`. Fora disso não faz nada; as variáveis são lidas uma vez (`sync.OnceValue`);
+  - o compose normal não define essas variáveis.
+- **Os cinco pontos:**
+
+  | Ponto | Janela |
+  | --- | --- |
+  | `wager.before_commit` | operação aplicada dentro da transação, antes do commit (HTTP e SQS) |
+  | `consumer.after_commit_before_delete` | depois do commit, antes do `DeleteMessage` |
+  | `outbox.after_claim_before_publish` | eventos reservados, antes do `SendMessage` |
+  | `outbox.after_publish_before_mark` | depois do `SendMessage`, antes do `MarkPublished` |
+  | `worker.after_claim` | pendência reservada, antes de aplicá-la |
+
+- **Orquestração** (escolha: testes Go):
+  - `test/e2e/faults_test.go`, com a tag `faults`, executado por `make test-faults` depois de `make e2e-up`;
+  - os testes chamam `docker compose` pelo `os/exec`;
+  - para cada ponto: as outras instâncias param; o `app` é recriado com `FAULT_POINT`; o cenário é disparado; o teste confirma `exited 137`; uma instância **normal** (`app2`) sobe e precisa recuperar o trabalho; ao final, as três instâncias são restauradas;
+  - a tag separada garante que a `test-e2e` nunca derrube containers.
+- **Prazos menores só no e2e:** o `docker-compose.e2e.yml` usa `SQS_VISIBILITY_TIMEOUT=10s`, `SQS_HANDLER_TIMEOUT=8s`, `OUTBOX_LEASE=10s` e `OUTBOX_PUBLISH_TIMEOUT=5s`. Isso só acelera a recuperação nos testes; os valores de produção não mudam.
+- **Cenários e resultados:**
+  1. **Consumidor morre depois do commit e antes do delete** (README §13.5):
+     - antes da morte: o efeito já está gravado (inbox concluída, um débito);
+     - depois do visibility timeout, a mensagem é reentregue à `app2`, a inbox a reconhece como duplicata (`sqs_messages_total{result="duplicate"} = 1` na instância nova, a prova do recebimento repetido) e ela é apagada;
+     - resultado: um único débito, saldo 75.00, fila vazia.
+  2. **Publisher morre entre o commit e a publicação** (README §11):
+     - os 2 eventos ficam confirmados e não publicados, e nada chega à fila;
+     - depois do lease, a `app2` publica;
+     - o evento reservado pela instância morta termina com `attempts = 2`, e cada `eventId` aparece uma vez na fila.
+  3. **Publisher morre entre a publicação e a confirmação:**
+     - o evento já foi enviado, mas não marcado;
+     - a `app2` o republica com o **mesmo `eventId`**, que também é o `MessageDeduplicationId`;
+     - a deduplicação FIFO absorveu a cópia (1 cópia por `eventId` na fila) e a outbox terminou toda publicada. Um consumidor real de `wallet-events` deve deduplicar por `eventId`.
+  4. **Processo morre antes do commit:**
+     - o cliente HTTP perde a conexão;
+     - nenhuma transação nem lançamento é gravado e o saldo fica intacto;
+     - o reenvio para a `app2` é processado **pela primeira vez** (201, sem replay).
+  5. **Worker morre depois de reservar uma pendência** (README §13.8, segunda parte):
+     - a reserva é revertida junto com a conexão, e o REFUND continua `PENDING_REFERENCE`;
+     - a `app2` o retoma: `PROCESSED`, saldo 100.00.
+  6. **As três instâncias mortas com `kill -9` e trabalho pendente:** depois de subir de novo, o replay devolve o resultado original e a pendência é resolvida quando a referência chega.
+  7. **Postgres pausado:**
+     - HTTP responde 503 (em 15s, D-036) e a readiness das três instâncias responde 503;
+     - a mensagem SQS enviada durante a pausa é processada depois do `unpause`;
+     - o reenvio HTTP é processado uma única vez (2 débitos, saldo 70.00), e a readiness volta a 200.
+  8. **LocalStack pausado:**
+     - as operações continuam sendo aceitas (201), porque a outbox desacopla a publicação;
+     - os 4 eventos ficam pendentes, `outbox_pending_events` cresce e a readiness responde 503;
+     - depois do `unpause`, a outbox drena.
+- **Ao fim de cada cenário:** `assertConverged`, ou seja, outbox vazia e todas as carteiras batendo com o ledger.
+- **Execução:** a suíte leva cerca de 3 min e passou em duas rodadas seguidas.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -852,3 +924,6 @@ Durante a etapa, o Docker Desktop reiniciou sozinho uma vez. O compose caiu, e u
   - o replay de uma operação processada responde **200** com `idempotentReplay: true`, não 201.
 - O Postman, rodado logo depois da suíte e2e, falhou na pasta 09. Causa: a suíte deixou cerca de 10 mil eventos na `wallet-events.fifo`, que não tem consumidor, e a coleção lê só um lote. Depois de limpar a fila, as 275 asserções passaram. O procedimento ficou documentado no `ROTEIRO.md`.
 - Uma execução da suíte de integração falhou durante esta etapa, enquanto o Postman rodava ao mesmo tempo contra o ambiente de três instâncias. A saída ficou truncada e não mostra qual teste falhou. As duas execuções seguintes, ainda com o ambiente de três instâncias no ar, passaram completas (290s e 297s). A falha fica registrada como **não reproduzida**; se voltar a aparecer, a saída completa deve ser guardada para investigação.
+
+### P-019 — Requisição pendurada com o Postgres pausado (etapa 3.4)
+Encontrado ao preparar o cenário de indisponibilidade do banco: `POST /wallets` não respondeu em 40s com o Postgres pausado, enquanto a readiness já respondia 503. Causa: os timeouts eram todos aplicados pelo servidor. Resolvido pela D-036, e agora a resposta é 503 em 15s.
