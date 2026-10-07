@@ -1070,17 +1070,19 @@ Gerado a partir de `docs/DECISIONS.md`: tudo que foi feito, decisões, tecnologi
 
 ## 3.6 Checklist final de entrega
 
-- [ ] `git clone` limpo + `docker compose up --build` funcionando sem passos manuais
-- [ ] `gofmt -l .` vazio
-- [ ] `go vet ./...` sem avisos
-- [ ] `go test ./...` e `go test -race ./...` passando
-- [ ] `make test-integration` e `make test-e2e` passando
-- [ ] `go.mod` e `go.sum` versionados; versão do Go igual em `go.mod` e no Dockerfile
-- [ ] `.env.example` sem segredos reais
-- [ ] Nenhum `float32`/`float64` no código de dinheiro (`grep -rn "float" internal/`)
-- [ ] Todas as rotas de negócio exigem auth (teste que percorre o router)
-- [ ] README, ARCHITECTURE e relatório revisados
-- [ ] Revisão dos critérios eliminatórios da seção 14, item a item
+Executado em 2026-10-07 (D-039):
+
+- [x] `git clone` limpo + `docker compose up --build` funcionando sem passos manuais (sem `.env`, saudável em 57s, Postman 275/275)
+- [x] `gofmt -l .` vazio
+- [x] `go vet ./...` sem avisos (também com as tags `integration`, `e2e` e `faults`)
+- [x] `go test ./...` e `go test -race ./...` passando
+- [x] `make test-integration`, `make test-e2e` e `make test-faults` passando
+- [x] `go.mod` e `go.sum` versionados; Go 1.27.1 no `go.mod` e no Dockerfile
+- [x] `.env.example` sem segredos reais (só valores locais de exemplo)
+- [x] Nenhum `float` no código de dinheiro (os usos encontrados são de métricas e de tempo)
+- [x] Todas as rotas de negócio exigem auth (`TestRouter_EveryBusinessRouteRequiresAuthentication` percorre o router)
+- [x] README, ARCHITECTURE e relatório revisados contra os pedidos de documentação do enunciado
+- [x] Revisão dos critérios eliminatórios da seção 14, item a item (`docs/RELATORIO.md` §7)
 
 ---
 

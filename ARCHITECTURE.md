@@ -38,6 +38,7 @@ Ver D-011, D-016 e D-023.
   - moeda em minúsculas.
 
   Cada valor tem uma única forma textual, então não há normalização antes do hash.
+- **Limites:** o `int64` em centavos vai de `-92233720368547758.08` a `92233720368547758.07`. A entrada externa aceita de `0.00` ao máximo; valores negativos só aparecem internamente, por exemplo na diferença da reconciliação.
 - Overflow é checado em toda soma e subtração (`AMOUNT_OUT_OF_RANGE`). Operar moedas diferentes resulta em `CURRENCY_MISMATCH`.
 - No banco: `BIGINT` mais `CHAR(3)`. O saldo observado numa rejeição guarda a própria moeda (`balance_currency`), porque numa rejeição por `CURRENCY_MISMATCH` ela difere da moeda da operação.
 - Na API: sempre `{"amount":"25.00","currency":"BRL"}`.
@@ -334,7 +335,7 @@ Ver D-031.
 | latência | `wager_processing_duration_seconds{channel}`, `http_request_duration_seconds{route,method,status}` |
 | reconciliação | `reconciliation_mismatches_total` |
 
-- **Logs** em JSON (`slog`): `instanceId`, `correlationId` (`X-Correlation-Id`, propagado para as transações e os eventos), `transactionId`, `walletId`, `messageId`.
+- **Logs** em JSON (`slog`): `instanceId`, `correlationId` (`X-Correlation-Id`, propagado para as transações e os eventos), `transactionId`, `walletId`, `providerId`, `messageId`.
 - Há um log de acesso por rota, sempre com o padrão da rota e nunca com IDs.
 - **Nunca** são registrados tokens, o header `Authorization`, corpos de requisição ou payloads financeiros completos.
 

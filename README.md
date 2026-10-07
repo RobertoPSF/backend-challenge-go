@@ -254,7 +254,7 @@ docker run --rm --network host -v "$PWD/docs/postman:/etc/newman" postman/newman
 | `GET /health/ready` | Postgres e SQS acessíveis; responde 503 com o motivo, e `draining` durante o shutdown |
 | `GET /metrics` | Prometheus: resultados por canal, replays, conflitos, DLQ, retries, atraso da outbox, latências, divergências de reconciliação |
 
-Os logs são JSON e trazem `instanceId`, `correlationId` (propagado por `X-Correlation-Id`), `transactionId`, `walletId` e `messageId`. Nunca registram tokens nem payloads financeiros completos.
+Os logs são JSON e trazem `instanceId`, `correlationId` (propagado por `X-Correlation-Id`), `transactionId`, `walletId`, `providerId` e `messageId`. Nunca registram tokens nem payloads financeiros completos.
 
 ## 9. Testes
 

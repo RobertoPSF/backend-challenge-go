@@ -873,6 +873,25 @@ Lacunas fechadas nesta etapa:
      - `wallet-service`: consumir a entrada, enviar para a DLQ e publicar eventos;
      - `events-consumer`: só ler `wallet-events`.
 
+## D-039 — Checklist final de entrega (etapa 3.6)
+
+- **Clone limpo:** um `git clone` do repositório, **sem o `.env`** local, subiu com `docker compose up --build --wait` em 57s, todos os serviços saudáveis, e a collection do Postman passou nele (275/275).
+- **Qualidade:**
+  - `gofmt -l .` vazio;
+  - `go vet` limpo nas tags padrão, `integration`, `e2e` e `faults`;
+  - `go.mod`/`go.sum` versionados, com Go 1.27.1 igual no `go.mod` e no Dockerfile;
+  - nenhum `float` no caminho do dinheiro;
+  - `.env.example` só com valores locais.
+- **Teste novo:** `TestRouter_EveryBusinessRouteRequiresAuthentication` percorre o roteador com `chi.Walk` e exige 401 sem token em toda rota que não seja health ou métricas. Também confere o número de rotas, para que uma rota nova obrigue a revisar o teste. Prova de que ele detecta regressão: uma rota de carteira registrada fora do grupo autenticado fez o teste falhar.
+- **Todas as suítes passaram no código final:**
+  - unitários com `-race`;
+  - integração (290s);
+  - multi-instância (8s);
+  - falhas (182s).
+- **Documentação conferida contra cada pedido explícito do enunciado.** Dois complementos no `ARCHITECTURE.md`:
+  - os limites numéricos do `Money` (README §6.1);
+  - o `providerId` na lista de identificadores dos logs (README §12).
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)

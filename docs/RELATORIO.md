@@ -2,7 +2,7 @@
 
 Resumo de tudo o que foi feito para entregar o desafio ([`CHALLENGE.md`](CHALLENGE.md)): o que foi construído, as tecnologias escolhidas, as decisões tomadas (com as alternativas descartadas), os problemas encontrados e como foram resolvidos. A **concorrência** tem uma seção própria.
 
-O detalhe de cada decisão está em [`DECISIONS.md`](DECISIONS.md) (`D-001`…`D-038` são decisões e `P-001`…`P-019` são problemas). A arquitetura consolidada está em [`../ARCHITECTURE.md`](../ARCHITECTURE.md), e o passo a passo para rodar está no [`../README.md`](../README.md).
+O detalhe de cada decisão está em [`DECISIONS.md`](DECISIONS.md) (`D-001`…`D-039` são decisões e `P-001`…`P-019` são problemas). A arquitetura consolidada está em [`../ARCHITECTURE.md`](../ARCHITECTURE.md), e o passo a passo para rodar está no [`../README.md`](../README.md).
 
 ## 1. O que foi entregue
 
@@ -143,7 +143,7 @@ Cada decisão de design foi apresentada com as alternativas e os trade-offs e to
 
 | Nível | Comando | O que cobre |
 | --- | --- | --- |
-| Unitários | `go test -race ./...` | domínio (Money, máquina de estados, reversões, hash golden), config, Runner, backoff, classificação de mensagens, grafo do Fx |
+| Unitários | `go test -race ./...` | domínio (Money, máquina de estados, reversões, hash golden), config, Runner, backoff, classificação de mensagens, grafo do Fx, autenticação exigida em todas as rotas de negócio |
 | Integração | `make test-integration` (cerca de 5 min) | Postgres, LocalStack e Keycloak reais via testcontainers; schema (27 invariantes com o nome da constraint), store, concorrência com 3 pools, API completa, consumidor, publisher, worker, autenticação, reinicialização, Fx sem vazamentos |
 | Multi-instância | `make e2e-up && make test-e2e` (cerca de 7s) | três processos reais da aplicação nos cenários de concorrência |
 | Falhas | `make test-faults` (cerca de 3 min) | 8 cenários com morte real do processo (código 137), `kill -9` das três instâncias e pausa do Postgres e do SQS |
