@@ -1,3 +1,7 @@
 .env
 /bin/
 *.out
+
+# Material de estudo local (fora do repositório)
+docs/*
+!docs/CHALLENGE.md

@@ -1,6 +1,6 @@
 # Arquitetura
 
-Este documento registra as decisões que sustentam as garantias do serviço. Cada seção aponta para o registro detalhado em [`docs/DECISIONS.md`](docs/DECISIONS.md) (`D-NNN` são decisões e `P-NNN` são problemas encontrados), onde estão as alternativas avaliadas e os testes que provam cada ponto. As referências "README §N" apontam para o enunciado, em [`docs/CHALLENGE.md`](docs/CHALLENGE.md).
+Este documento registra as decisões que sustentam as garantias do serviço, as alternativas avaliadas e os testes que provam cada ponto. As referências "README §N" apontam para o enunciado, em [`docs/CHALLENGE.md`](docs/CHALLENGE.md).
 
 ## Visão geral
 
@@ -27,8 +27,6 @@ Camadas:
 
 ## Dinheiro
 
-Ver D-011, D-016 e D-023.
-
 - `Money{minor int64, currency}`, imutável, em **centavos**. Nenhum `float` existe no caminho do dinheiro.
 - Moedas aceitas: **BRL, USD e EUR**, todas com 2 casas. Moedas de outra escala, como JPY e KWD, são recusadas.
 - **Parsing estrito:** só a forma `^(0|[1-9][0-9]*)\.[0-9]{2}$` é aceita, em string. São recusados:
@@ -45,8 +43,6 @@ Ver D-011, D-016 e D-023.
 
 ## Transações SQL e Unit of Work
 
-Ver D-018, D-019 e D-036.
-
 - `store.InTx(ctx, func(ctx, r *Repos) error)` abre **uma** transação `READ COMMITTED`. Todos os repositórios recebidos em `r` compartilham essa transação. Se a função retorna erro ou entra em panic, tudo é desfeito.
 - A transação é sempre delimitada no **caso de uso**, nunca dentro de um repositório. O SQL é explícito (pgx, sem ORM).
 - **Retry da transação inteira**, até 3 vezes, nos casos de:
@@ -57,7 +53,7 @@ Ver D-018, D-019 e D-036.
   Por isso a função passada ao `InTx` não pode ter efeitos fora do banco: publicar no SQS, por exemplo, só acontece depois do commit, pela outbox.
 - **Prazos:**
   - `lock_timeout` de 5s e `statement_timeout` de 10s, aplicados pelo Postgres;
-  - `DB_TX_TIMEOUT` de 15s, aplicado **pela aplicação** a cada `InTx`, `ReadSnapshot` e `Query`, para continuar respondendo mesmo com o banco travado (P-019).
+  - `DB_TX_TIMEOUT` de 15s, aplicado **pela aplicação** a cada `InTx`, `ReadSnapshot` e `Query`, para continuar respondendo mesmo com o banco travado.
 - **Classificação de erros:**
   - prazos estourados, falhas de conexão e os códigos `55P03`, `57014`, `53300`, `57P01`, `57P03` e a classe `08` viram `ErrUnavailable`;
   - no HTTP, `ErrUnavailable` vira **503**; no SQS, retry com backoff;
@@ -72,8 +68,6 @@ Ver D-018, D-019 e D-036.
   O teste confere, pelo `xmin`, que todas as linhas vieram da mesma transação.
 
 ## Idempotência e hash
-
-Ver D-023 e D-024.
 
 - A idempotência é **persistente** e escopada pelo **provedor do token**. Dois índices únicos parciais garantem isso: `(provider_id, idempotency_key)` e `(provider_id, external_transaction_id)`. Nada fica só em memória.
 - **Hash do payload:** `SHA-256` do **JSON canônico** dos campos de negócio, com as chaves ordenadas, sem espaços e todos os valores como string:
@@ -95,7 +89,7 @@ Ver D-023 e D-024.
 
 ## Concorrência e locks
 
-Ver D-024, P-014, D-027, D-029 e D-035. É a parte central da solução.
+É a parte central da solução.
 
 **Estratégia:** lock **pessimista por carteira**, com uma checagem **otimista de versão** e as **constraints do banco** como barreiras finais. A escolha veio da comparação com otimista puro e com atualização condicional:
 - o pessimista lida melhor com alta disputa numa mesma carteira;
@@ -109,7 +103,7 @@ Ver D-024, P-014, D-027, D-029 e D-035. É a parte central da solução.
 4. `UPDATE wallets ... WHERE id = $1 AND version = $esperada`. Afetar 0 linhas gera `ErrConcurrentUpdate` e retry, nunca uma atualização perdida.
 5. Ledger, transação, inbox e outbox são gravados, e então o commit.
 
-**Por que `FOR NO KEY UPDATE`, e não `FOR UPDATE` (P-014):**
+**Por que `FOR NO KEY UPDATE`, e não `FOR UPDATE`:**
 - O `INSERT` em `wager_transactions` valida a FK para `wallets` pegando `FOR KEY SHARE` na linha da carteira.
 - `FOR UPDATE` conflita com `FOR KEY SHARE`. Duas operações na mesma carteira entravam num ciclo: cada uma segurava o KEY SHARE que a outra precisava liberar, o que gerou `deadlock detected` sob carga.
 - `FOR NO KEY UPDATE` continua exclusivo entre escritores, mas é compatível com `FOR KEY SHARE`.
@@ -138,14 +132,12 @@ Um bug numa camada é contido pela seguinte.
 - **Outbox:** reserva com `SKIP LOCKED` mais **lease**, publicação fora da transação e confirmação condicionada ao dono da reserva.
 - **Ordem de locks sem ciclos:** o caminho síncrono segura a carteira e **pula** pendências travadas ao acordá-las; o worker segura a pendência e depois espera a carteira.
 
-**Prova com processos independentes (D-035):** três containers da aplicação, cada um com o próprio pool e memória, rodaram todos os cenários acima com as requisições distribuídas entre eles, inclusive 30 carteiras × 20 operações. Resultado:
+**Prova com processos independentes:** três containers da aplicação, cada um com o próprio pool e memória, rodaram todos os cenários acima com as requisições distribuídas entre eles, inclusive 30 carteiras × 20 operações. Resultado:
 - nenhum erro;
 - `wallet_concurrency_conflicts_total` zerado, porque o lock serializa sem gerar retries;
 - o saldo de todas as carteiras bate com o ledger.
 
 ## Máquina de estados e falhas transitórias × permanentes
-
-Ver D-013, D-015 e D-026.
 
 ```
 PENDING ──► PROCESSED        (terminal)
@@ -167,8 +159,6 @@ PENDING ──► PROCESSED        (terminal)
 
 ## Referências pendentes
 
-Ver D-025 e D-027.
-
 - REFUND, ROLLBACK e WIN **com** referência dependem da transação referenciada, resolvida por `(providerId, referenceExternalTransactionId)` sempre **no escopo do próprio provedor**.
 
   | Estado da referência | Resultado |
@@ -182,11 +172,9 @@ Ver D-025 e D-027.
   - Ao atingir `PENDING_MAX_ATTEMPTS` (10) ou `PENDING_TTL` (30m): `REJECTED REFERENCE_NOT_FOUND`.
   - Se o processo morre no meio, o rollback libera a pendência e outra instância a retoma (cenário de falha 5).
 - **Acordar:** quando uma transação termina, na mesma transação SQL as pendências que a referenciam passam a `next_attempt_at = agora`. A resolução leva cerca de 0,5s, em vez de esperar o backoff. Isso também resolve cadeias: ROLLBACK → REFUND → BET.
-- **WIN com referência espera** (interpretação, D-025): ela só é creditada depois que a BET existe e é validada. Uma WIN **sem** referência é creditada na hora.
+- **WIN com referência espera** (interpretação): ela só é creditada depois que a BET existe e é validada. Uma WIN **sem** referência é creditada na hora.
 
 ## Reversões
-
-Ver D-003 e D-025.
 
 | Operação | Referência permitida | Movimento | Sem saldo |
 | --- | --- | --- | --- |
@@ -203,8 +191,6 @@ Ver D-003 e D-025.
 
 ## Inbox
 
-Ver D-028.
-
 - `inbox_messages (consumer_name, message_id)` é a chave primária. O registro é inserido **na mesma transação** da operação, com `ON CONFLICT DO NOTHING`.
 - Mensagem já registrada:
   - com o mesmo hash → **duplicata**, apagada sem nenhum efeito;
@@ -213,8 +199,6 @@ Ver D-028.
 - O `DeleteMessage` só acontece **depois do commit**. Se o processo morre entre os dois, a mensagem volta, e a inbox a reconhece como duplicata, como provado no cenário de falha 1 com processo real.
 
 ## Outbox e contrato de eventos
-
-Ver D-014, D-017 e D-029.
 
 - Os eventos são gravados na mesma transação da operação, como **snapshot JSON imutável** (um trigger impede alterá-los). Por construção, nada é publicado antes do commit.
 - **Publicação:**
@@ -237,8 +221,6 @@ Ver D-014, D-017 e D-029.
 
 ## SQS
 
-Ver D-028 e D-032.
-
 - **Contrato de entrada:**
   - envelope `{messageId, type: "WagerTransactionRequested", occurredAt, data}`, com `data` igual ao corpo HTTP mais `idempotencyKey`;
   - `MessageGroupId = walletId`, o que dá ordem por carteira e carteiras em paralelo;
@@ -255,8 +237,6 @@ Ver D-028 e D-032.
 - Como o SQS não carrega token, o provedor precisa estar em `KNOWN_PROVIDERS`. O acesso à fila em si é controlado pelas políticas IAM (ver Autenticação).
 
 ## Autenticação e autorização
-
-Ver D-020, D-021, D-026 e D-034.
 
 - **IdP:** Keycloak, com o realm importado no boot. Tokens via `client_credentials`.
 - **Validação do JWT**, com `coreos/go-oidc`:
@@ -289,8 +269,6 @@ Ver D-020, D-021, D-026 e D-034.
 
 ## Fx e ciclo de vida
 
-Ver D-006, D-007 e D-008.
-
 - Há um `fx.Module` por pacote, reunidos em `bootstrap.Options()`. O mesmo grafo é usado pelo `main` e pelos testes, e um teste unitário valida o grafo completo (`fx.ValidateApp`).
 - **Inicialização:**
   1. config validada;
@@ -308,7 +286,7 @@ Ver D-006, D-007 e D-008.
 
 ## Shutdown
 
-Ver D-007, D-028, D-029 e D-032. A ordem sai do grafo do Fx (inversa da inicialização):
+A ordem sai do grafo do Fx (inversa da inicialização):
 
 1. O readiness passa a responder **503 `draining`**, o que tira a instância do balanceamento.
 2. **Publisher da outbox:** para de reservar e **libera** os eventos reservados e ainda não publicados.
@@ -317,11 +295,9 @@ Ver D-007, D-028, D-029 e D-032. A ordem sai do grafo do Fx (inversa da iniciali
 5. **Servidor HTTP:** `Shutdown` gracioso, que conclui as requisições em andamento.
 6. **Pool do Postgres:** fechado por último.
 
-Medido no compose: 2,8s, sem erros. O teste de reinicialização envia uma mensagem **durante** o desligamento, e a próxima instância a consome em 0,11s (P-016).
+Medido no compose: 2,8s, sem erros. O teste de reinicialização envia uma mensagem **durante** o desligamento, e a próxima instância a consome em 0,11s.
 
 ## Observabilidade
-
-Ver D-031.
 
 | Sinal | Métrica |
 | --- | --- |
@@ -373,22 +349,21 @@ Ver D-031.
 ## Limitações, interpretações e trabalho não concluído
 
 **Interpretações adotadas:**
-- **Uma reversão bem-sucedida por transação**, seja REFUND ou ROLLBACK, e não uma por tipo (D-003).
-- **WIN com referência espera a BET**, em vez de ser recusada ou paga sem validação (D-025).
-- **Carteira inexistente** responde 422 sem gravar nada, para que a chave não seja consumida. No SQS, a mensagem vai para a DLQ (D-002).
-- **Referência em BET/LOSS** é recusada como entrada inválida, em vez de ignorada (D-015).
-- **A rejeição grava o saldo observado** (D-015).
+- **Uma reversão bem-sucedida por transação**, seja REFUND ou ROLLBACK, e não uma por tipo.
+- **WIN com referência espera a BET**, em vez de ser recusada ou paga sem validação.
+- **Carteira inexistente** responde 422 sem gravar nada, para que a chave não seja consumida. No SQS, a mensagem vai para a DLQ.
+- **Referência em BET/LOSS** é recusada como entrada inválida, em vez de ignorada.
+- **A rejeição grava o saldo observado**.
 - **`FAILED` não é produzido:** toda falha de infraestrutura é tratada como transitória (ver Máquina de estados).
-- **Lista curta de moedas** (BRL, USD, EUR) e **charset restrito** nos identificadores, para eliminar ambiguidades no hash (D-011, D-023).
-- **Ordem estrita por carteira na outbox**, ao custo de um evento travado segurar os seguintes da mesma carteira (D-029).
-- **Prazo de transação estourado no momento do commit** gera um resultado ambíguo: 503, mas talvez gravado. O reenvio cai no replay, sem duplicar (D-036).
+- **Lista curta de moedas** (BRL, USD, EUR) e **charset restrito** nos identificadores, para eliminar ambiguidades no hash.
+- **Ordem estrita por carteira na outbox**, ao custo de um evento travado segurar os seguintes da mesma carteira.
+- **Prazo de transação estourado no momento do commit** gera um resultado ambíguo: 503, mas talvez gravado. O reenvio cai no replay, sem duplicar.
 
 **Limitações conhecidas:**
 - **As políticas IAM não são aplicadas pelo LocalStack** na versão gratuita. As políticas estão escritas em `deploy/aws/iam/`, mas, no ambiente local, qualquer credencial acessa as filas. Numa conta AWS real elas seriam anexadas aos papéis.
-- **LocalStack fixado em 4.14.0**, a última versão que roda sem licença (D-001).
+- **LocalStack fixado em 4.14.0**, a última versão que roda sem licença.
 - **Prazos menores no ambiente e2e:** a suíte e2e e a de falhas usam visibilidade e lease de 10s para acelerar a recuperação. Os valores padrão continuam sendo 30s.
-- **Suíte de integração lenta** (cerca de 5 min): cada teste sobe seus próprios containers, inclusive um Keycloak (D-033).
-- **Ambiente de desenvolvimento:** houve instabilidades do Docker Desktop durante os testes (P-013, P-017) e uma falha não reproduzida (P-018). Ver o registro.
+- **Suíte de integração lenta** (cerca de 5 min): cada teste sobe seus próprios containers, inclusive um Keycloak.
 
 **Não implementado** (opcional no enunciado ou fora do escopo):
 - **Tracing distribuído** (OpenTelemetry) e dashboards; a correlação é feita pelo `correlationId` nos logs, transações e eventos.
