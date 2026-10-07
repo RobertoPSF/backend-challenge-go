@@ -57,6 +57,12 @@ func (s *Wagers) record(channel string, started time.Time, result WagerResult) {
 	s.metrics.WagerTransactions.WithLabelValues(channel, string(result.Transaction.Kind()), string(result.Transaction.Status())).Inc()
 }
 
+func (s *Wagers) recordFailure(channel string, err error) {
+	if errors.Is(err, domain.ErrWalletNotFound) {
+		s.metrics.WalletNotFound.WithLabelValues(channel).Inc()
+	}
+}
+
 func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, error) {
 	if _, err := s.newTransaction(cmd.Request); err != nil {
 		return WagerResult{}, err
@@ -70,6 +76,7 @@ func (s *Wagers) Process(ctx context.Context, cmd WagerCommand) (WagerResult, er
 		return err
 	})
 	if err != nil {
+		s.recordFailure(cmd.Channel, err)
 		return WagerResult{}, err
 	}
 	s.record(cmd.Channel, started, result)
@@ -119,6 +126,7 @@ func (s *Wagers) ProcessMessage(ctx context.Context, msg InboundMessage, cmd Wag
 		return r.Inbox.Complete(ctx, msg.Consumer, msg.MessageID, wager.Transaction.ID(), s.now())
 	})
 	if err != nil {
+		s.recordFailure(cmd.Channel, err)
 		return MessageResult{}, err
 	}
 	s.record(cmd.Channel, started, result.WagerResult)

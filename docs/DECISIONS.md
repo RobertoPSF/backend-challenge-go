@@ -2,6 +2,8 @@
 
 Log incremental de decisões, problemas encontrados e soluções de contorno. É a fonte do `ARCHITECTURE.md` e do relatório de entrega.
 
+As referências "README §N" apontam para o enunciado, hoje em [`docs/CHALLENGE.md`](CHALLENGE.md).
+
 Formato: **contexto** (com a referência ao README) → **opções e trade-offs** → **decisão** → **consequências**.
 
 ---
@@ -854,6 +856,23 @@ Lacunas fechadas nesta etapa:
 - **Ao fim de cada cenário:** `assertConverged`, ou seja, outbox vazia e todas as carteiras batendo com o ledger.
 - **Execução:** a suíte leva cerca de 3 min e passou em duas rodadas seguidas.
 
+## D-038 — Documentação de entrega e pendências fechadas (etapa 3.5)
+
+- **Documentos:**
+  - o enunciado foi movido para `docs/CHALLENGE.md`;
+  - o `README.md` da raiz passou a ser o da solução: pré-requisitos, variáveis, filas, migrations, identidades, exemplos e os quatro níveis de teste;
+  - `ARCHITECTURE.md` traz as seções exigidas pelo README §15, com as limitações e interpretações;
+  - `docs/RELATORIO.md` é o relatório de entrega.
+- **Pendências encontradas ao revisar as decisões contra o código:**
+  1. **A D-002 previa log e métrica para operação em carteira inexistente.** O SQS já atendia (DLQ com log e `sqs_dead_letters_total{reason="WALLET_NOT_FOUND"}`), mas o HTTP só aparecia no log de acesso. Correção:
+     - métrica `wager_wallet_not_found_total{channel}`, incrementada pelo caso de uso nos dois canais;
+     - log WARN `wager refused: wallet not found` no HTTP, com `walletId`, `providerId` e `correlationId`;
+     - o `TestWagerAPI` passou a exigir a série.
+  2. **A D-001 e o plano previam escrever as políticas IAM** mesmo que o emulador não as aplique, e nenhum arquivo tinha sido criado. Agora estão em `deploy/aws/iam/`, uma por papel, com privilégio mínimo:
+     - `provider-producer`: só `SendMessage` na entrada;
+     - `wallet-service`: consumir a entrada, enviar para a DLQ e publicar eventos;
+     - `events-consumer`: só ler `wallet-events`.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -916,7 +935,7 @@ Os casos de entrada inválida e de autorização contavam **todas** as transaç�
 Detectado pelo teste de reinicialização: uma mensagem enviada durante o desligamento levava cerca de 30s (o visibility timeout) para ser consumida pela nova instância, porque foi entregue a uma requisição de long polling cancelada só do lado do cliente. Resolvido pela D-032, que também corrigiu o descarte silencioso de um lote recebido no instante do shutdown.
 
 ### P-017 — Instabilidade do Docker Desktop durante os testes (etapa 3.1, ambiente)
-Durante a etapa, o Docker Desktop reiniciou sozinho uma vez. O compose caiu, e um container do testcontainers sumiu durante a subida (`No such container`). Numa rodada seguinte, o socket do Docker deu timeout (`context deadline exceeded`) ao subir o Postgres. Nenhum dos casos tem relação com o código; rodadas seguintes passaram completas (suíte de integração em 5 min). Com cerca de 7,7 GB de memória na VM do Docker e um Keycloak por teste, a máquina fica perto do limite. Se as falhas voltarem, a mitigação é a opção (b) da D-033.
+Durante a etapa, o Docker Desktop reiniciou sozinho uma vez. O compose caiu, e um container do testcontainers sumiu durante a subida (`No such container`). Numa rodada seguinte, o socket do Docker deu timeout (`context deadline exceeded`) ao subir o Postgres. Nenhum dos casos tem relação com o código; rodadas seguintes passaram completas (suíte de integração em 5 min). Com cerca de 7,7 GB de memória na VM do Docker e um Keycloak por teste, a máquina fica perto do limite. Se as falhas voltarem, a mitigação é a opção (b) da D-033. Voltou a acontecer uma vez na etapa 3.5: um timeout do socket do Docker ao subir o Postgres do `TestProcessWager`, enquanto o compose era reconstruído e o Postman rodava ao mesmo tempo. Rodando sozinha, a suíte passou (298s).
 
 ### P-018 — Ajustes na primeira execução da suíte multi-instância (etapa 3.3, só no teste)
 - Duas asserções do teste estavam erradas em relação ao contrato da API, e a aplicação estava certa nos dois casos:

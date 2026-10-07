@@ -375,6 +375,7 @@ func TestWagerAPI(t *testing.T) {
 			`wager_transactions_total{channel="http",kind="BET",status="REJECTED"}`,
 			`wager_transactions_total{channel="worker",kind="REFUND",status="PROCESSED"}`,
 			`wager_idempotent_replays_total{channel="http"}`,
+			`wager_wallet_not_found_total{channel="http"}`,
 			`wager_processing_duration_seconds_count{channel="http"}`,
 			`pending_reference_attempts_total{outcome="resolved"}`,
 			`outbox_publish_total{result="published"}`,

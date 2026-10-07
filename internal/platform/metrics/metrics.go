@@ -24,6 +24,7 @@ func NewRegistry() *prometheus.Registry {
 type Metrics struct {
 	WagerTransactions        *prometheus.CounterVec
 	IdempotentReplays        *prometheus.CounterVec
+	WalletNotFound           *prometheus.CounterVec
 	ProcessingDuration       *prometheus.HistogramVec
 	ConcurrencyConflicts     *prometheus.CounterVec
 	SQSMessages              *prometheus.CounterVec
@@ -43,6 +44,10 @@ func New(reg prometheus.Registerer) *Metrics {
 		IdempotentReplays: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "wager_idempotent_replays_total",
 			Help: "Repeated operations answered with the persisted result, by channel.",
+		}, []string{"channel"}),
+		WalletNotFound: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_wallet_not_found_total",
+			Help: "Wager operations refused because the wallet does not exist, by channel. Nothing is persisted.",
 		}, []string{"channel"}),
 		ProcessingDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "wager_processing_duration_seconds",
@@ -79,7 +84,7 @@ func New(reg prometheus.Registerer) *Metrics {
 			Buckets: prometheus.DefBuckets,
 		}, []string{"route", "method", "status"}),
 	}
-	reg.MustRegister(m.WagerTransactions, m.IdempotentReplays, m.ProcessingDuration, m.ConcurrencyConflicts,
+	reg.MustRegister(m.WagerTransactions, m.IdempotentReplays, m.WalletNotFound, m.ProcessingDuration, m.ConcurrencyConflicts,
 		m.SQSMessages, m.SQSDeadLetters, m.PendingReferenceAttempts, m.OutboxPublish, m.ReconciliationMismatches, m.HTTPRequests)
 	return m
 }

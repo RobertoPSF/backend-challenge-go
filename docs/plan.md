@@ -1,6 +1,6 @@
 # Plano de Execução Detalhado — 3 dias
 
-Este documento detalha cada etapa da implementação do desafio descrito no [README.md](../README.md). Cada etapa traz:
+Este documento detalha cada etapa da implementação do desafio descrito no enunciado, [docs/CHALLENGE.md](CHALLENGE.md) (originalmente o `README.md` do repositório; as referências "README §N" apontam para ele). Cada etapa traz:
 
 - **Objetivo**: o que precisa existir ao final;
 - **Tarefas**: o trabalho concreto;

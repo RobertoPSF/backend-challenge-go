@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -81,6 +82,10 @@ func (h *WagerHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.wagers.Process(r.Context(), app.WagerCommand{Request: req, CorrelationID: correlationFrom(r.Context()), Channel: app.ChannelHTTP})
 	if err != nil {
+		if errors.Is(err, domain.ErrWalletNotFound) {
+			h.log.WarnContext(r.Context(), "wager refused: wallet not found", "walletId", input.WalletID,
+				"providerId", req.ProviderID, "correlationId", correlationFrom(r.Context()))
+		}
 		writeAppError(w, r, h.log, err)
 		return
 	}
