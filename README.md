@@ -8,56 +8,6 @@ Serviço em Go que movimenta carteiras de jogadores a partir de operações de j
 - espera por referências que ainda não chegaram;
 - reconciliação.
 
-## Como executar
-
-Só é preciso ter **Docker** (com Compose v2) e `make`. O Go 1.27.1 só é necessário para rodar os testes fora de containers.
-
-**1. Subir tudo:** banco, IdP, filas, migrations e aplicação. Nenhum passo manual é necessário; os valores locais vêm do [`.env.example`](.env.example).
-
-```sh
-git clone https://github.com/RobertoPSF/backend-challenge-go.git
-cd backend-challenge-go
-docker compose up --build -d --wait
-```
-
-**2. Conferir:**
-
-```sh
-curl -s localhost:8080/health/ready
-# {"checks":{"postgres":"ok","sqs":"ok"},"status":"ok"}
-```
-
-**3. Fazer uma operação autenticada:** os tokens vêm do Keycloak local.
-
-```sh
-ADMIN=$(make -s token-wallet-service)
-PROV=$(make -s token-provider-a)
-PLAYER=0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
-
-WALLET=$(curl -s -X POST localhost:8080/wallets -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
-  -d "{\"playerId\":\"$PLAYER\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}" | sed -E 's/.*"id":"([^"]+)".*/\1/')
-
-curl -s -X POST localhost:8080/wagering/transactions \
-  -H "Authorization: Bearer $PROV" -H 'Content-Type: application/json' -H 'Idempotency-Key: provider-a:tx-1' \
-  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"tx-1\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}"
-# {"transactionId":"...","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":false}
-```
-
-Repetir a última chamada devolve o mesmo resultado com `"idempotentReplay":true`. Os demais exemplos (replay, conflito, rejeição, pendência, reconciliação e envio pela fila SQS) estão na [§7](#7-exemplos-de-chamadas).
-
-**4. Rodar os testes:**
-
-| Testes | Comando | Precisa de |
-| --- | --- | --- |
-| Unitários | `go test ./...`, `go test -race ./...`, `go vet ./...` | Go |
-| Integração (containers reais, cerca de 5 min) | `make test-integration` | Go e Docker |
-| Três instâncias independentes | `make e2e-up && make test-e2e` | Go e Docker |
-| Simulações de falha (cerca de 3 min) | `make test-faults` (depois do `make e2e-up`) | Go e Docker |
-
-Detalhes na [§9](#9-testes).
-
-**5. Parar:** `docker compose down -v` (ou `make e2e-down`, se subiu o ambiente de três instâncias).
-
 ## Documentação
 
 - Enunciado do desafio: [`docs/CHALLENGE.md`](docs/CHALLENGE.md)
@@ -100,7 +50,8 @@ A AWS CLI não é necessária: os comandos de fila usam o `awslocal` que já exi
 ## 2. Subir o ambiente
 
 ```sh
-docker compose up --build
+docker compose up --build -d --wait # direto, em segundo plano, aguardando tudo ficar saudável
+make up                             # com make, em segundo plano, aguardando tudo ficar saudável
 ```
 
 Nenhum passo manual é necessário a partir de um checkout limpo. O compose sobe, nesta ordem:
@@ -120,7 +71,7 @@ curl -s localhost:8080/health/ready
 # {"checks":{"postgres":"ok","sqs":"ok"},"status":"ok"}
 ```
 
-Para parar: `docker compose down` (mantém os dados) ou `docker compose down -v` (apaga os dados).
+Para parar: `make down` / `docker compose down` (mantém os dados) ou `make clean` / `docker compose down -v` (apaga os dados).
 
 ## 3. Variáveis de ambiente
 

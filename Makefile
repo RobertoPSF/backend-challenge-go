@@ -1,7 +1,7 @@
 .PHONY: up down clean build fmt vet test test-race check queues test-integration e2e-up e2e-down test-e2e test-faults e2e migrate-up migrate-down migrate-down-all migrate-version
 
 up:
-	docker compose up --build -d
+	docker compose up --build -d --wait
 
 down:
 	docker compose down
