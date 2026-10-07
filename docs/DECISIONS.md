@@ -586,7 +586,7 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - Publicar na DLQ e apagar não são atômicos: uma queda entre os dois pode duplicar a mensagem na DLQ, o que é inofensivo. Se a publicação falhar, a mensagem não é apagada e volta a ser recebida.
   - **Falhas transitórias continuam indo pelo redrive**, porque podem se resolver sozinhas.
 - **Limites e prazos** (configuráveis e validados no boot):
-  - `SQS_WAIT_TIME` 20s (long polling, máximo do SQS);
+  - `SQS_WAIT_TIME` 10s (long polling; era 20s, ver D-032);
   - `SQS_VISIBILITY_TIMEOUT` 30s;
   - `SQS_HANDLER_TIMEOUT` 20s, que precisa ser menor que a visibilidade para não processar uma mensagem que já ficou visível para outro consumidor;
   - backoff de retry com base de 2s e máximo de 5m;
@@ -595,8 +595,8 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - `ENABLE_CONSUMER` permite desligar o consumidor.
 - **Ordem e paralelismo:** as mensagens de um lote são processadas **em sequência** pela goroutine que as recebeu, o que preserva a ordem FIFO de um grupo.
   - Contrato para os produtores: `MessageGroupId = walletId` (ordem por carteira, carteiras em paralelo) e `MessageDeduplicationId = messageId` (deduplicação do SQS por 5 minutos, **só uma otimização**: a garantia vem da inbox e dos índices únicos).
-- **Shutdown (README §10):** o contexto do `RunOnce` é cancelado, o que **interrompe o long polling na hora**. A mensagem em andamento termina com `context.WithoutCancel` + `SQS_HANDLER_TIMEOUT` (D-007), e as mensagens do lote ainda não iniciadas são **liberadas** com `ChangeMessageVisibility(0)`, para reentrega imediata.
-  - Verificado no compose: `docker compose stop` levou 0,47s, e a ordem foi consumidor → worker de pendências → HTTP → pool.
+- **Shutdown (README §10):** o consumidor para de iniciar novas buscas, e a busca em andamento termina e tem o resultado liberado (comportamento revisto na **D-032**). A mensagem em andamento termina com `context.WithoutCancel` + `SQS_HANDLER_TIMEOUT` (D-007), e as mensagens do lote ainda não iniciadas são **liberadas** com `ChangeMessageVisibility(0)`, para reentrega imediata.
+  - Verificado no compose: `docker compose stop` levou 0,47s com a versão original; depois da D-032, 2,8s, e a ordem foi consumidor → worker de pendências → HTTP → pool.
 - **Testes:**
   - unitários: envelope do README válido e 8 envelopes inválidos; classificação dos erros; backoff de retry;
   - integração (`TestSQSConsumer`, LocalStack e Postgres reais):
@@ -704,6 +704,37 @@ Cada invariante do README §5.8 e §6 tem uma proteção no schema, verificada p
   - unitário do readiness em modo `draining`;
   - compose: amostra de `/metrics` e log de acesso verificados depois da collection do Postman.
 
+## D-032 — Desligamento do consumidor sem mensagens presas (etapa 3.1)
+
+- **Problema encontrado (P-016):** no shutdown, o long polling era cancelado **só do lado do cliente**. A requisição continuava aberta no broker, recebia mensagens que chegassem nesse intervalo e ninguém as liberava: elas ficavam invisíveis até o visibility timeout (30s). O teste de reinicialização mediu **30,78s** até a nova instância consumir uma mensagem enviada durante o desligamento. Não havia perda nem duplicidade, só atraso. A AWS real tem o mesmo comportamento.
+- **Opções:**
+  - (a) manter o cancelamento imediato e documentar o atraso;
+  - (b) deixar a busca em andamento terminar e liberar o que ela trouxer.
+- **Decisão: (b)**, que atende literalmente o README §10 ("libere sua visibilidade para reentrega segura"):
+  - o `ReceiveMessage` usa `context.WithoutCancel(ctx)` com timeout de `SQS_WAIT_TIME + 5s`: o shutdown não aborta a busca em andamento, mas o Runner não inicia outra;
+  - toda mensagem recebida é **processada** (se o shutdown ainda não começou) ou **liberada** com `ChangeMessageVisibility(0)` (se já começou);
+  - `SQS_WAIT_TIME` padrão caiu de **20s para 10s**, para limitar o tempo de desligamento. O custo é um pouco mais de buscas vazias ao SQS;
+  - o desligamento leva no máximo `SQS_WAIT_TIME`, bem dentro do `fx.StopTimeout` de 30s. Medido no compose: 2,8s.
+- **Bug corrigido junto:** na versão antiga, se a busca retornasse mensagens no instante em que o shutdown começava, o código descartava o lote (`if ctx.Err() != nil { return }`) **sem processar nem liberar**. Agora isso não acontece.
+- **Prova:** `TestRestart_*` envia a mensagem **durante** o desligamento da instância A; a instância B a consome em **0,11s** (antes: 30,78s). O teste passou 2 vezes seguidas.
+
+## D-033 — Testes de integração: lacunas cobertas na etapa 3.1
+
+- **Infraestrutura dos testes:**
+  - Opções: (a) um conjunto de containers por teste × (b) containers compartilhados por pacote (`TestMain`).
+  - Decisão: **(a)**: isolamento total, sem refatorar. Custo: a suíte leva cerca de 5 min. A otimização fica como melhoria futura.
+- **Lacunas encontradas na comparação com o README §13, e os testes novos:**
+  1. **Atomicidade financeira com falha no meio** (`TestProcessWager/failure_after_ledger_and_balance_were_written_rolls_everything_back`):
+     - o `INSERT` da outbox é revogado do `wallet_app`, então o `ProcessWager` (e o `ProcessMessage`, com a inbox) falha **depois** de gravar a transação, o lançamento e o novo saldo;
+     - resultado: nada persistido (transação, débito, inbox, saldo e versão intactos);
+     - depois de restaurar a permissão, a mesma operação é processada pela primeira vez, sem replay.
+  2. **Recuperação após reinicialização** (`TestRestart_PreservesIdempotencyPendingWorkAndConsistency`, README §13.8):
+     - a instância A cria uma BET e uma pendência e é desligada; durante o desligamento chega uma mensagem SQS; a instância B sobe sobre o mesmo banco e as mesmas filas;
+     - resultado: o replay devolve o resultado e o saldo originais; a mensagem é consumida por B; a pendência criada por A é resolvida pelo worker de B; a reconciliação fica consistente (60.00, 5 lançamentos); a outbox é esvaziada; a invariante do ledger vale.
+  3. **A mesma operação, ao mesmo tempo, pelo HTTP e pelo SQS**, com o consumidor real rodando na aplicação (`TestWagerAPI/the_same_operation_at_the_same_time_over_HTTP_and_SQS_has_a_single_effect`, 5 rodadas): uma única transação, a inbox apontando para ela e um único débito.
+  4. **Invariante global** (`assertAllWalletsReconcile`): para **todas** as carteiras do banco, saldo armazenado = créditos − débitos do ledger. Roda ao final de `TestWagerAPI` e de `TestRestart`, e acusou corretamente a carteira adulterada de propósito pelo teste de reconciliação, que agora desfaz a adulteração ao terminar.
+- **Harness:** dividido em `startInfra` (containers + variáveis) e `startInstance` (uma instância Fx da aplicação, com `INSTANCE_ID` próprio), o que permite várias instâncias e reinícios sobre a mesma infraestrutura.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -761,3 +792,9 @@ Depois que a suíte de integração passou (190s), o Docker Desktop deixou de re
 
 ### P-015 — Falso positivo de "transação persistida" no teste da API (etapa 2.4, só no teste)
 Os casos de entrada inválida e de autorização contavam **todas** as transações da carteira e acharam 1 a mais. Inspecionando as linhas, era a `OPENING` da abertura, que existe por design. A contagem passou a filtrar `origin = 'EXTERNAL'`. Nenhuma alteração no código da aplicação.
+
+### P-016 — Mensagem presa numa busca de long polling abandonada no shutdown (etapa 3.1)
+Detectado pelo teste de reinicialização: uma mensagem enviada durante o desligamento levava cerca de 30s (o visibility timeout) para ser consumida pela nova instância, porque foi entregue a uma requisição de long polling cancelada só do lado do cliente. Resolvido pela D-032, que também corrigiu o descarte silencioso de um lote recebido no instante do shutdown.
+
+### P-017 — Instabilidade do Docker Desktop durante os testes (etapa 3.1, ambiente)
+Durante a etapa, o Docker Desktop reiniciou sozinho uma vez. O compose caiu, e um container do testcontainers sumiu durante a subida (`No such container`). Numa rodada seguinte, o socket do Docker deu timeout (`context deadline exceeded`) ao subir o Postgres. Nenhum dos casos tem relação com o código; rodadas seguintes passaram completas (suíte de integração em 5 min). Com cerca de 7,7 GB de memória na VM do Docker e um Keycloak por teste, a máquina fica perto do limite. Se as falhas voltarem, a mitigação é a opção (b) da D-033.

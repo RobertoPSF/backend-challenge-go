@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 )
 
@@ -283,6 +287,9 @@ func TestWagerAPI(t *testing.T) {
 		if _, err := a.DB.Exec(t.Context(), `UPDATE wallets SET balance = balance + 1 WHERE id = $1`, w.ID); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			_, _ = a.DB.Exec(context.Background(), `UPDATE wallets SET balance = balance - 1 WHERE id = $1`, w.ID)
+		})
 		res = reconcile(w.ID, admin)
 		if res.Body["consistent"] != false || amountOf(res, "difference") != "0.01" || amountOf(res, "storedBalance") != "975.01" ||
 			amountOf(res, "calculatedBalance") != "975.00" {
@@ -351,6 +358,58 @@ func TestWagerAPI(t *testing.T) {
 				t.Errorf("missing metric series %s", series)
 			}
 		}
+	})
+
+	t.Run("the same operation at the same time over HTTP and SQS has a single effect", func(t *testing.T) {
+		sqsClient := newSQSClient(t, a.LS.Endpoint)
+		for round := range 5 {
+			w := openAPIWallet(t, a, admin, "100.00")
+			id, msgID := ext(), "msg-"+uuid.NewString()
+			data := wagerBody("provider-a", w, "BET", "30.00", id, "")
+			data["idempotencyKey"] = "provider-a:" + id
+			body, _ := json.Marshal(map[string]any{"messageId": msgID, "type": "WagerTransactionRequested",
+				"occurredAt": time.Now().UTC().Format(time.RFC3339), "data": data})
+
+			var httpRes response
+			runParallelHTTP(2, func(i int) {
+				if i == 0 {
+					httpRes = submit(t, a, providerA, "provider-a", w, "BET", "30.00", id, "")
+					return
+				}
+				if _, err := sqsClient.SendMessage(t.Context(), &sqs.SendMessageInput{
+					QueueUrl: aws.String(sqsClient.Queues.InputURL), MessageBody: aws.String(string(body)),
+					MessageGroupId: aws.String(w.ID), MessageDeduplicationId: aws.String(msgID),
+				}); err != nil {
+					t.Error(err)
+				}
+			})
+
+			deadline := time.Now().Add(15 * time.Second)
+			for count(t, a.DB, `SELECT count(*) FROM inbox_messages WHERE message_id = $1 AND completed_at IS NOT NULL`, msgID) == 0 {
+				if time.Now().After(deadline) {
+					t.Fatalf("round %d: SQS message not consumed", round)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			if httpRes.Status != http.StatusCreated && httpRes.Status != http.StatusOK {
+				t.Fatalf("round %d: HTTP = %d %s", round, httpRes.Status, httpRes.Raw)
+			}
+			if n := count(t, a.DB, `SELECT count(*) FROM wager_transactions WHERE provider_id = 'provider-a' AND external_transaction_id = $1`, id); n != 1 {
+				t.Fatalf("round %d: transactions = %d, want 1", round, n)
+			}
+			if n := count(t, a.DB, `SELECT count(*) FROM inbox_messages i JOIN wager_transactions t ON t.id = i.transaction_id
+				WHERE i.message_id = $1 AND t.external_transaction_id = $2`, msgID, id); n != 1 {
+				t.Fatalf("round %d: inbox does not point to the single transaction", round)
+			}
+			if res := doRequest(t, http.MethodGet, a.BaseURL+"/wallets/"+w.ID, admin, nil, nil); balanceOf(res) != "70.00" {
+				t.Fatalf("round %d: balance = %s, want 70.00 (debited once)", round, balanceOf(res))
+			}
+		}
+	})
+
+	t.Run("ledger invariant holds for every wallet", func(t *testing.T) {
+		assertAllWalletsReconcile(t, a.DB)
 	})
 
 	t.Run("the same BET 50 times over HTTP", func(t *testing.T) {

@@ -196,6 +196,45 @@ func TestProcessWager(t *testing.T) {
 		})
 	}
 
+	t.Run("failure after ledger and balance were written rolls everything back", func(t *testing.T) {
+		w := env.openWallet(t, "100.00")
+		if _, err := env.db.Exec(ctx, `REVOKE INSERT ON outbox_events FROM wallet_app`); err != nil {
+			t.Fatal(err)
+		}
+		restore := func() { _, _ = env.db.Exec(context.Background(), `GRANT INSERT ON outbox_events TO wallet_app`) }
+		t.Cleanup(restore)
+
+		httpCmd := wagerCmd(t, w, "BET", "40.00", "bet-atomic-http")
+		if _, err := wagers.Process(ctx, httpCmd); err == nil {
+			t.Fatal("expected the outbox insert to fail")
+		}
+		sqsCmd := wagerCmd(t, w, "BET", "40.00", "bet-atomic-sqs")
+		msg := app.InboundMessage{Consumer: "wallet-service", MessageID: "msg-atomic", Hash: "h"}
+		if _, err := wagers.ProcessMessage(ctx, msg, sqsCmd); err == nil {
+			t.Fatal("expected the outbox insert to fail")
+		}
+		restore()
+
+		if balance, version := env.walletState(t, w.ID()); balance != 10000 || version != 1 {
+			t.Errorf("wallet changed: %d v%d", balance, version)
+		}
+		if n := count(t, env.db, `SELECT count(*) FROM wager_transactions WHERE external_transaction_id IN ('bet-atomic-http', 'bet-atomic-sqs')`); n != 0 {
+			t.Errorf("transactions left behind = %d", n)
+		}
+		if n := count(t, env.db, `SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id = $1 AND direction = 'DEBIT'`, w.ID()); n != 0 {
+			t.Errorf("debits left behind = %d", n)
+		}
+		if n := count(t, env.db, `SELECT count(*) FROM inbox_messages WHERE message_id = 'msg-atomic'`); n != 0 {
+			t.Errorf("inbox rows left behind = %d", n)
+		}
+
+		res, err := wagers.Process(ctx, httpCmd)
+		if err != nil || res.Replay || res.Transaction.Snapshot().BalanceAfter.String() != "60.00" {
+			t.Fatalf("retry after recovery = %+v, %v; want a first, successful processing", res, err)
+		}
+		env.assertLedgerMatchesBalance(t, w.ID())
+	})
+
 	t.Run("unknown wallet is not persisted", func(t *testing.T) {
 		w := env.openWallet(t, "10.00")
 		c := wagerCmd(t, w, "BET", "1.00", "bet-ghost")

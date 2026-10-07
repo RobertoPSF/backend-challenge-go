@@ -76,17 +76,19 @@ func register(lc fx.Lifecycle, c *Consumer, cfg config.Config, log *slog.Logger)
 func (c *Consumer) Name() string { return "sqs-consumer" }
 
 func (c *Consumer) RunOnce(ctx context.Context) (bool, error) {
-	out, err := c.sqs.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+	receiveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.cfg.WaitTime+5*time.Second)
+	defer cancel()
+	out, err := c.sqs.ReceiveMessage(receiveCtx, &sqs.ReceiveMessageInput{
 		QueueUrl:                    aws.String(c.sqs.Queues.InputURL),
 		MaxNumberOfMessages:         10,
 		WaitTimeSeconds:             int32(c.cfg.WaitTime.Seconds()),
 		VisibilityTimeout:           int32(c.cfg.VisibilityTimeout.Seconds()),
 		MessageSystemAttributeNames: []types.MessageSystemAttributeName{types.MessageSystemAttributeNameApproximateReceiveCount, types.MessageSystemAttributeNameMessageGroupId},
 	})
-	if ctx.Err() != nil {
-		return false, nil
-	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return false, nil
+		}
 		return false, fmt.Errorf("receive messages: %w", err)
 	}
 

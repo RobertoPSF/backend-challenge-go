@@ -41,7 +41,7 @@ type Consumer struct {
 	Enabled           bool          `env:"ENABLE_CONSUMER" envDefault:"true"`
 	Name              string        `env:"SQS_CONSUMER_NAME" envDefault:"wallet-service"`
 	Workers           int           `env:"SQS_WORKERS" envDefault:"2"`
-	WaitTime          time.Duration `env:"SQS_WAIT_TIME" envDefault:"20s"`
+	WaitTime          time.Duration `env:"SQS_WAIT_TIME" envDefault:"10s"`
 	VisibilityTimeout time.Duration `env:"SQS_VISIBILITY_TIMEOUT" envDefault:"30s"`
 	HandlerTimeout    time.Duration `env:"SQS_HANDLER_TIMEOUT" envDefault:"20s"`
 	RetryBaseDelay    time.Duration `env:"SQS_RETRY_BASE_DELAY" envDefault:"2s"`
