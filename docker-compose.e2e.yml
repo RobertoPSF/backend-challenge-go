@@ -1,0 +1,22 @@
+services:
+  app:
+    environment:
+      INSTANCE_ID: app1
+
+  app2:
+    extends:
+      file: docker-compose.yml
+      service: app
+    environment:
+      INSTANCE_ID: app2
+    ports: !override
+      - "8082:8080"
+
+  app3:
+    extends:
+      file: docker-compose.yml
+      service: app
+    environment:
+      INSTANCE_ID: app3
+    ports: !override
+      - "8083:8080"

@@ -1,4 +1,4 @@
-.PHONY: up down clean build fmt vet test test-race check queues test-integration migrate-up migrate-down migrate-down-all migrate-version
+.PHONY: up down clean build fmt vet test test-race check queues test-integration e2e-up e2e-down test-e2e e2e migrate-up migrate-down migrate-down-all migrate-version
 
 up:
 	docker compose up --build -d
@@ -31,6 +31,19 @@ queues:
 
 test-integration: ## Testes de integração com containers reais (testcontainers)
 	go test -tags integration -race -count=1 ./test/...
+
+E2E_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.e2e.yml
+
+e2e-up: ## Sobe o ambiente com três instâncias da aplicação (portas 8080, 8082 e 8083)
+	$(E2E_COMPOSE) up --build -d --wait
+
+e2e-down: ## Derruba o ambiente multi-instância e apaga os volumes
+	$(E2E_COMPOSE) down -v
+
+test-e2e: ## Testes contra as três instâncias já em execução
+	go test -tags e2e -race -count=1 ./test/e2e/...
+
+e2e: e2e-up test-e2e
 
 MIGRATE = docker compose run --rm -T --entrypoint /bin/sh migrate -c
 

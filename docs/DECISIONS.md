@@ -752,6 +752,36 @@ Lacunas fechadas nesta etapa:
 2. **401 com tokens reais na aplicação completa**, não só no middleware isolado.
 3. **Chave do `provider-a` reutilizada pelo `provider-b` no próprio escopo** (mesmo `externalTransactionId` e mesmo `Idempotency-Key`, mas `providerId=provider-b`): cria uma transação **nova** do `provider-b` (201, outro `transactionId`, sem `idempotentReplay`). Isso confirma que a idempotência é escopada pelo provedor do token e não vaza o resultado de outro provedor.
 
+## D-035 — Três instâncias independentes e suíte multi-instância (etapa 3.3)
+
+- **Por que containers, e não três instâncias Fx no mesmo processo de teste:** o README (linha 200) exige "pelo menos três **processos** independentes, cada um com suas próprias conexões e memória". Três apps Fx dentro do `go test` compartilhariam o processo, então não bastam como prova.
+- **Ambiente** (`docker-compose.e2e.yml`, override do compose principal):
+  - `app2` e `app3` herdam o serviço `app` por `extends`. Dentro de um override, o `extends` precisa apontar `file: docker-compose.yml`, senão o Compose não enxerga o serviço base;
+  - cada uma tem `INSTANCE_ID` próprio e porta própria (8080, 8082 e 8083; a 8081 é do Keycloak);
+  - todas rodam HTTP, consumidor SQS, worker de pendências e publisher da outbox, com pools de conexão separados.
+- **Comandos:**
+  - `make e2e-up` sobe tudo com `--wait`;
+  - `make test-e2e` roda `go test -tags e2e ./test/e2e/...` contra as instâncias já em execução;
+  - `make e2e` faz os dois;
+  - `make e2e-down` derruba e apaga os volumes.
+- **Configuração:** a suíte lê as URLs por variável de ambiente (`E2E_APP_URLS`, `E2E_KEYCLOAK_URL`, `E2E_DATABASE_URL`, `E2E_SQS_URL`), com os padrões do compose. Usa tokens reais do Keycloak, o Postgres para as asserções e o LocalStack para enviar mensagens.
+- **Cenários** (`test/e2e/multi_instance_test.go`). As requisições são distribuídas em round-robin entre as instâncias e disparadas juntas, atrás de uma barreira (`concurrently`):
+  1. **A mesma BET 50×**: exatamente 1× 201 e 49× 200, todas com o mesmo `transactionId` e o saldo 90.00; um único débito.
+  2. **80 + 80 sobre 100 em instâncias diferentes**, 10 rodadas: uma 201 e uma 422 `INSUFFICIENT_FUNDS`, um débito, saldo 20.00. O reenvio de cada uma por outra instância devolve a mesma transação, com o mesmo status e saldo, marcada como `idempotentReplay`.
+  3. **30 carteiras × 20 operações** (BET 10.00 e WIN 5.00 alternadas, 600 requisições com até 30 simultâneas): todas 201; cada carteira termina com 950.00, versão 21 e 21 lançamentos. O reenvio das 600 devolve 200, sem mudar nada.
+  4. **As mesmas operações pelo HTTP (3 instâncias) e pelo SQS (3 consumidores)**, 6 carteiras × 10 operações, cada uma enviada pelos dois canais ao mesmo tempo:
+     - uma única transação e um único débito por operação;
+     - a inbox registra todas as mensagens;
+     - o reenvio HTTP devolve 200;
+     - o teste imprime quantas mensagens cada instância consumiu (numa rodada: 20, 22 e 18).
+  5. **Pendências retomadas por qualquer instância**: 9 REFUNDs chegam antes das BETs, que entram por outras instâncias; todos terminam `PROCESSED` e as carteiras voltam a 100.00.
+- **Convergência ao fim de cada cenário** (`assertConverged`): a outbox é totalmente publicada, e o saldo de **todas** as carteiras do banco é igual a créditos − débitos do ledger.
+- **Resultado:** a suíte passa em cerca de 6,5s, com 3 rodadas seguidas verdes.
+  - Nos logs das três instâncias: nenhum ERROR ou WARN.
+  - `wallet_concurrency_conflicts_total` ficou zerada: o lock pessimista `FOR NO KEY UPDATE` serializa as escritas da mesma carteira entre processos sem gerar conflito de versão nem deadlock.
+  - O trabalho assíncrono se distribuiu entre as instâncias. Pendências resolvidas: 24, 26 e 22. Mensagens SQS: 20, 22 e 18.
+- **Fora do escopo:** o teste de carga (k6/vegeta), opcional no plano, não foi feito.
+
 ## Problemas encontrados
 
 ### P-001 — LocalStack recente exige licença (etapa 1.1)
@@ -815,3 +845,10 @@ Detectado pelo teste de reinicialização: uma mensagem enviada durante o deslig
 
 ### P-017 — Instabilidade do Docker Desktop durante os testes (etapa 3.1, ambiente)
 Durante a etapa, o Docker Desktop reiniciou sozinho uma vez. O compose caiu, e um container do testcontainers sumiu durante a subida (`No such container`). Numa rodada seguinte, o socket do Docker deu timeout (`context deadline exceeded`) ao subir o Postgres. Nenhum dos casos tem relação com o código; rodadas seguintes passaram completas (suíte de integração em 5 min). Com cerca de 7,7 GB de memória na VM do Docker e um Keycloak por teste, a máquina fica perto do limite. Se as falhas voltarem, a mitigação é a opção (b) da D-033.
+
+### P-018 — Ajustes na primeira execução da suíte multi-instância (etapa 3.3, só no teste)
+- Duas asserções do teste estavam erradas em relação ao contrato da API, e a aplicação estava certa nos dois casos:
+  - a rejeição de negócio traz o código em `failureCode`, não em `error.code`;
+  - o replay de uma operação processada responde **200** com `idempotentReplay: true`, não 201.
+- O Postman, rodado logo depois da suíte e2e, falhou na pasta 09. Causa: a suíte deixou cerca de 10 mil eventos na `wallet-events.fifo`, que não tem consumidor, e a coleção lê só um lote. Depois de limpar a fila, as 275 asserções passaram. O procedimento ficou documentado no `ROTEIRO.md`.
+- Uma execução da suíte de integração falhou durante esta etapa, enquanto o Postman rodava ao mesmo tempo contra o ambiente de três instâncias. A saída ficou truncada e não mostra qual teste falhou. As duas execuções seguintes, ainda com o ambiente de três instâncias no ar, passaram completas (290s e 297s). A falha fica registrada como **não reproduzida**; se voltar a aparecer, a saída completa deve ser guardada para investigação.

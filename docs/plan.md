@@ -1003,7 +1003,7 @@ Cada teste de acesso negado confere também que **não houve efeito financeiro**
 ## 3.3 Multi-instância e concorrência
 
 ### Ambiente
-- `docker-compose.e2e.yml` (override) com `app1`, `app2` e `app3` (âncora YAML, portas 8081–8083), cada uma com todos os componentes ligados, inclusive consumer e workers. Isso cumpre o requisito de três processos independentes, cada um com suas próprias conexões e memória.
+- `docker-compose.e2e.yml` (override) com `app`, `app2` e `app3` (`extends` do serviço `app`, portas 8080, 8082 e 8083, porque a 8081 é do Keycloak), cada uma com todos os componentes ligados, inclusive consumer e workers, e com `INSTANCE_ID` próprio. Isso cumpre o requisito de três processos independentes, cada um com suas próprias conexões e memória.
 - `make e2e` sobe o ambiente e roda `go test -tags e2e ./test/e2e/...`.
 
 ### Testes (`test/e2e`)

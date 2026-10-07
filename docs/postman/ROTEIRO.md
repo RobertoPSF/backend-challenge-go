@@ -32,6 +32,12 @@ docker run --rm --network host -v "$PWD/docs/postman:/etc/newman" postman/newman
 
 O roteiro é **repetível**: pode ser rodado várias vezes sobre o mesmo ambiente, porque gera IDs novos a cada execução e limpa as filas que lê.
 
+Se a suíte multi-instância (`make test-e2e`) rodou antes no mesmo ambiente, ela deixa milhares de eventos na `wallet-events.fifo`, que não tem consumidor. Nesse caso, a pasta 09 não encontra os eventos da própria carteira. Limpe a fila antes:
+
+```sh
+docker compose exec localstack awslocal sqs purge-queue --queue-url http://localhost:4566/000000000000/wallet-events.fifo
+```
+
 ## 3. O que cada pasta demonstra
 
 ### Base
